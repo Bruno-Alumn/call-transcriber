@@ -12,7 +12,12 @@
   --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #85847f;
   --accent: #2a78d6; --good: #008300; --warn: #c98500; --bad: #e34948;
   --grid: #e9e8e4;
-  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300; --s7:#6250d6; --s8:#e34948; --other:#a3a29c;
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300; --s7:#6250d6; --s8:#e34948;
+  /* people 9-24: picked to stay apart from the first 8 and each other (OKLab distance) and readable on the surface */
+  --s9:#00515e; --s10:#721872; --s11:#764002; --s12:#7b5c82; --s13:#918436; --s14:#0bafda; --s15:#155700; --s16:#a93ca8;
+  --s17:#c16ae2; --s18:#9084b2; --s19:#397d87; --s20:#9aa900; --s21:#c4917b; --s22:#a35b47; --s23:#5b6637; --s24:#4327a7;
+  --fb-l: .56; --fb-dl: -.08;   /* lightness (and its step) of the generated colours for person 25 and up */
+  --other:#a3a29c;
   --radius: 14px;
   --shadow: 0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.04);
 }
@@ -24,6 +29,9 @@
     --accent: #3987e5; --good: #0ca30c; --warn: #c98500; --bad: #e66767;
     --grid: #262624;
     --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#0ca30c; --s7:#9085e9; --s8:#e66767; --other:#6b6a65;
+    --s9:#97dbe8; --s10:#fb9df8; --s11:#ffbe8a; --s12:#84648b; --s13:#7f7221; --s14:#25b8e4; --s15:#83c575; --s16:#db6dd9;
+    --s17:#a44dc4; --s18:#b5a9d9; --s19:#397d87; --s20:#c9da51; --s21:#ce9a84; --s22:#a35b47; --s23:#8f9c6b; --s24:#7162e4;
+    --fb-l: .74; --fb-dl: -.12;
     --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.25);
   }
 }
@@ -34,6 +42,9 @@
   --accent: #3987e5; --good: #0ca30c; --warn: #c98500; --bad: #e66767;
   --grid: #262624;
   --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#0ca30c; --s7:#9085e9; --s8:#e66767; --other:#6b6a65;
+  --s9:#97dbe8; --s10:#fb9df8; --s11:#ffbe8a; --s12:#84648b; --s13:#7f7221; --s14:#25b8e4; --s15:#83c575; --s16:#db6dd9;
+  --s17:#a44dc4; --s18:#b5a9d9; --s19:#397d87; --s20:#c9da51; --s21:#ce9a84; --s22:#a35b47; --s23:#8f9c6b; --s24:#7162e4;
+  --fb-l: .74; --fb-dl: -.12;
   --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.25);
 }
 * { box-sizing: border-box; }
@@ -171,8 +182,15 @@ select:focus, input:focus { border-color: var(--accent); }
 .card.grow > .body, .card.grow > .feed, .card.grow > .pers { flex: 1; min-height: 0; overflow: hidden; }
 .card.grow.c-act > .body { display: flex; }
 .card.grow #act { height: 100%; min-height: 60px; }
-.card.grow.c-tl > .body { display: flex; align-items: flex-end; }
-.card.grow.c-talk > .body, .card.grow.c-words > .body { -webkit-mask-image: linear-gradient(#000 calc(100% - 18px), transparent); mask-image: linear-gradient(#000 calc(100% - 18px), transparent); }
+/* timeline: bottom-aligned when it fits, scrolls when there are more lanes than room (auto margin, so the top stays reachable) */
+.card.grow.c-tl > .body { display: flex; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; }
+.card.grow.c-tl #tl { flex: none; margin-top: auto; }
+.c-tl:not(.grow) > .body { max-height: 340px; overflow-y: auto; overscroll-behavior: contain; }
+/* talk time lists everyone: it scrolls inside its panel instead of cutting people off */
+.card.grow.c-talk > .body { overflow-y: auto; overscroll-behavior: contain; -webkit-mask-image: linear-gradient(#000 calc(100% - 14px), transparent); mask-image: linear-gradient(#000 calc(100% - 14px), transparent); }
+.card.grow.c-talk .bars { padding-bottom: 12px; }   /* the last row clears the fade that hints there's more */
+.c-talk:not(.grow) .bars { max-height: 330px; overflow-y: auto; overscroll-behavior: contain; padding-right: 2px; }
+.card.grow.c-words > .body { -webkit-mask-image: linear-gradient(#000 calc(100% - 18px), transparent); mask-image: linear-gradient(#000 calc(100% - 18px), transparent); }
 .card.grow > .feed { overflow-y: auto; }
 #panel-store { display: none; }
 .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
@@ -218,7 +236,7 @@ mark { background: color-mix(in srgb, var(--warn) 35%, transparent); color: inhe
 /* bars */
 .bars { display: flex; flex-direction: column; gap: 8px; }
 .bar-row { display: grid; grid-template-columns: 130px 1fr 92px; align-items: center; gap: 10px; font-size: 12.5px; cursor: pointer; }
-.bar-row .name { display: flex; align-items: center; gap: 7px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text-primary); }
+.bar-row .name { display: flex; align-items: center; gap: 7px; overflow-wrap: anywhere; line-height: 1.25; color: var(--text-primary); }   /* a long name wraps rather than being cut */
 .bar-row .track { height: 10px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
 .bar-row .fill { height: 100%; border-radius: 4px; min-width: 2px; transition: width .4s; }
 .bar-row .num { text-align: right; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
@@ -281,6 +299,7 @@ body.compact .card .head { padding: 9px 12px 5px; }
 body.compact .card .head .meta { font-size: 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
 body.compact .body { padding: 2px 12px 10px; min-height: 0; }
 body.compact .now { padding: 0 12px 10px; gap: 6px; max-height: 72px; overflow: hidden; }
+body.compact .now.open { max-height: min(180px, 28vh); overflow-y: auto; overscroll-behavior: contain; }   /* "+N" opened: everyone, scrolling */
 body.compact .chip { padding: 3px 8px 3px 4px; font-size: 12px; }
 body.compact .res { gap: 6px; }
 body.compact .res .m { padding: 6px 8px; }
@@ -292,7 +311,7 @@ body.compact .bar-row { grid-template-columns: minmax(0, 96px) minmax(48px, 1fr)
 body.compact .bar-row .num { white-space: nowrap; }
 body.compact .words { grid-template-columns: 1fr; gap: 2px; }
 body.compact .word { font-size: 12px; }
-body.compact .legend { padding: 0 12px 4px; font-size: 11px; flex-wrap: nowrap; overflow: hidden; }
+body.compact .legend { padding: 0 12px 4px; font-size: 11px; gap: 2px 10px; max-height: 38px; overflow-y: auto; overscroll-behavior: contain; }   /* wraps; scrolls past two rows */
 body.compact #feedmeta { display: none; }
 @media (max-width: 900px) {
   html, body { overflow: auto; }
@@ -333,6 +352,11 @@ body.compact #feedmeta { display: none; }
 .pers .pn { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pers .ps { font-size: 12px; color: var(--text-primary); margin-top: 3px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .pers .pt { font-size: 11px; color: var(--text-muted); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* everyone the three cards don't cover: one "+N" line that opens into name buttons */
+.pers-rest { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 6px; max-height: 72px; overflow-y: auto; overscroll-behavior: contain; font-size: 11.5px; }
+.pers-rest button { font: inherit; display: inline-flex; align-items: center; gap: 5px; color: var(--text-secondary); background: transparent; border: 1px solid var(--grid); border-radius: 4px; padding: 1px 6px; cursor: pointer; }
+.pers-rest button:hover { border-color: var(--text-muted); color: var(--text-primary); }
+.pers-rest .tog { font-family: var(--mono); color: var(--text-muted); }
 .pers-empty { grid-column: 1 / -1; color: var(--text-muted); font-size: 12px; padding: 2px 0 4px; }
 /* accounts + transcribe picker */
 .accts { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
@@ -426,6 +450,8 @@ select, input[type=search] { border-radius: var(--radius); }
 .chip .sw { width: 8px; height: 8px; border-radius: 2px; flex: none; opacity: .55; }
 .chip.talking { color: var(--text-primary); border-color: var(--text-secondary); }
 .chip.talking .sw { opacity: 1; }
+.chip.more { font: inherit; font-size: 12px; cursor: pointer; color: var(--text-secondary); font-family: var(--mono); }
+.chip.more:hover { border-color: var(--text-muted); color: var(--text-primary); }
 /* bars and word list */
 .bar-row .track { height: 6px; border-radius: 1px; }
 .bar-row .fill { border-radius: 1px; }
@@ -546,7 +572,7 @@ select, input[type=search] { border-radius: var(--radius); }
 
 <script>
 const $ = (s) => document.querySelector(s);
-const SLOTS = ['--s1','--s2','--s3','--s4','--s5','--s6','--s7','--s8'];
+const SLOTS = Array.from({ length: 24 }, (_, i) => '--s' + (i + 1));   // person colours, see :root
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const today = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); };
 const fmtTime = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -563,7 +589,7 @@ if (SHARE) document.documentElement.classList.add('share');
 let allLines = [], lines = [], names = {}, filter = null, query = '', liveState = null, range = 60;
 const GAP = 15 * 60000;   // 15 quiet minutes = a new call session
 const keyOf = new Map();        // record -> speaker key
-const colorIndex = new Map();   // key -> slot (first-appearance order)
+const colorIndex = new Map();   // key -> colour number (order of first line in the call)
 const latestName = new Map();   // key -> most recent display name
 
 function speakerKey(r, uidBySuffix, nameToUid) {
@@ -574,28 +600,39 @@ function speakerKey(r, uidBySuffix, nameToUid) {
   return 'name:' + r.speaker;
 }
 function rebuildKeys() {
-  keyOf.clear(); colorIndex.clear(); latestName.clear();
+  keyOf.clear(); latestName.clear();
   const uidBySuffix = new Map();
   for (const uid of Object.keys(names)) uidBySuffix.set(uid.slice(-4), uid);
   for (const r of allLines) if (r.user) uidBySuffix.set(r.user.slice(-4), r.user);
   const nameToUid = new Map(Object.entries(names).map(([uid, n]) => [n, uid]));
   for (const r of allLines) if (r.user && !/^user-\d{4}$/.test(r.speaker)) nameToUid.set(r.speaker, r.user);
   for (const r of allLines) keyOf.set(r, speakerKey(r, uidBySuffix, nameToUid));
-  // Colors go to the first 8 people to pass 30 s of talk in this session, in
-  // that order, and never change afterwards (live data only extends the prefix).
-  // (In calls of 8 or fewer people everyone simply gets a color in speaking order.)
-  const talked = new Map(); let next = 0;
-  const few = new Set(lines.map((r) => keyOf.get(r))).size <= SLOTS.length;
+  // Everyone gets their own colour, numbered by when they first spoke in this call
+  // (`lines` is in time order). It's worked out from the lines alone, never from the
+  // order they arrived in, so a reload, a share viewer and another window all agree.
+  // Later lines only add people at the end; the one exception is two people who are
+  // new in the same few seconds and whose first lines finish transcribing out of
+  // order: they swap once, as soon as the earlier line arrives. (2B rewrites keep
+  // about the same start times, so they can't move anyone further than that.)
+  colorIndex.clear();
   for (const r of lines) {
     const k = keyOf.get(r);
-    talked.set(k, (talked.get(k) || 0) + dur(r));
-    if (!colorIndex.has(k) && (few || talked.get(k) >= 30) && next < SLOTS.length) colorIndex.set(k, next++);
+    if (!colorIndex.has(k)) colorIndex.set(k, colorIndex.size);
     if (!/^user-\d{4}$/.test(r.speaker) || !latestName.has(k)) latestName.set(k, r.speaker);
   }
   for (const k of latestName.keys()) if (names[k]) latestName.set(k, names[k]);
-  for (const k of latestName.keys()) if (!colorIndex.has(k)) colorIndex.set(k, 99 + colorIndex.size);   // grey "Other" 
 }
-const colorFor = (k) => { const i = colorIndex.get(k); return i != null && i < SLOTS.length ? `var(${SLOTS[i]})` : 'var(--other)'; };
+// The first 24 people get the hand-picked slots; after that a colour is generated
+// from the number (golden-angle hue steps, two lightness levels; the start hue is
+// the one that lands farthest from the 24 in both themes), the same every time.
+// --fb-l / --fb-dl keep it readable on the light and the dark surface.
+const colorFor = (k) => {
+  const i = colorIndex.get(k);
+  if (i == null) return 'var(--other)';
+  if (i < SLOTS.length) return `var(${SLOTS[i]})`;
+  const n = i - SLOTS.length, hue = (n * 137.508 + 166) % 360;
+  return `oklch(calc(var(--fb-l) + var(--fb-dl) * ${n % 2}) 0.13 ${hue.toFixed(1)})`;
+};
 const nameFor = (k) => latestName.get(k) || k;
 const dur = (r) => Math.max(0.3, (r.end - r.t) / 1000);
 
@@ -679,14 +716,14 @@ function renderKPIs(s) {
 }
 function renderBars(s) {
   const max = s.per[0]?.talk || 1, total = s.talk || 1;
-  $('#bars').innerHTML = s.per.slice(0, 12).map((p) => `
+  // everyone, however many: the list scrolls inside its panel when it's long
+  $('#bars').innerHTML = s.per.map((p) => `
     <div class="bar-row${filter && filter !== p.k ? ' dim' : ''}" data-k="${esc(p.k)}" title="${esc(nameFor(p.k))}: ${p.words} words in ${p.lines} lines">
       <span class="name"><span class="swatch" style="background:${colorFor(p.k)}"></span>${esc(nameFor(p.k))}</span>
       <span class="track"><span class="fill" style="display:block;width:${(100 * p.talk / max).toFixed(1)}%;background:${colorFor(p.k)}"></span></span>
       <span class="num">${fmtDur(p.talk)} · ${Math.round(100 * p.talk / total)}%</span>
       <button class="read" data-read="${esc(p.k)}" title="Personality read of ${esc(nameFor(p.k))} from this call (local AI, just for fun)">Read</button>
     </div>`).join('') || '<div class="empty" style="padding:8px">No one has spoken yet</div>';
-  if (s.per.length > 12) $('#bars').insertAdjacentHTML('beforeend', `<div style="color:var(--text-muted);font-size:12px">+ ${s.per.length - 12} more</div>`);
   document.querySelectorAll('.bar-row').forEach((el) => el.onclick = () => setFilter(el.dataset.k));
   document.querySelectorAll('.bar-row .read').forEach((b) => b.onclick = (e) => { e.stopPropagation(); personaRead(b.dataset.read); });
 }
@@ -705,14 +742,13 @@ function renderActivity(s) {
   const bucketMin = spanMin <= 75 ? 2 : spanMin <= 240 ? 5 : 15;
   const bms = bucketMin * 60000;
   const b0 = Math.floor(startT / bms) * bms, nb = Math.max(1, Math.ceil((endT - b0) / bms));
-  const top8 = s.per.map((p) => p.k).filter((k) => colorIndex.get(k) < 8);
-  const keys = [...new Set([...[...colorIndex.keys()].filter((k) => colorIndex.get(k) < 8 && top8.includes(k)), 'other'])];
+  const keys = s.per.map((p) => p.k).sort((a, b) => colorIndex.get(a) - colorIndex.get(b));   // everyone, in colour order (stable while live)
   const buckets = Array.from({ length: nb }, () => new Map());
   for (const r of lines) {
     if (r.end < b0 || !own(r)) continue;
     const i = Math.floor((r.t - b0) / bms); if (i < 0 || i >= nb) continue;
-    let k = keyOf.get(r); if (colorIndex.get(k) >= 8) k = 'other';
-    if (filter && keyOf.get(r) !== filter) continue;
+    const k = keyOf.get(r);
+    if (filter && k !== filter) continue;
     buckets[i].set(k, (buckets[i].get(k) || 0) + dur(r));
   }
   const tot = buckets.map((b) => [...b.values()].reduce((a, v) => a + v, 0));
@@ -727,9 +763,9 @@ function renderActivity(s) {
     const segs = keys.filter((k) => b.get(k)).map((k) => ({ k, v: b.get(k) }));
     segs.forEach((sg, j) => {
       const y1 = y(acc + sg.v), y0 = y(acc); acc += sg.v;
-      const h = Math.max(0, y0 - y1 - (j < segs.length - 1 ? 2 : 0));
+      const h = Math.max(0, y0 - y1 - (j < segs.length - 1 && y0 - y1 > 4 ? 1 : 0));   // a hairline gap, unless that would hide a thin slice
       const isTop = j === segs.length - 1, r = isTop ? Math.min(4, w / 2, h) : 0;
-      const fill = sg.k === 'other' ? 'var(--other)' : colorFor(sg.k);
+      const fill = colorFor(sg.k);
       out += isTop && r > 0
         ? `<path d="M${x},${y0} V${y1 + r} Q${x},${y1} ${x + r},${y1} H${x + w - r} Q${x + w},${y1} ${x + w},${y1 + r} V${y0} Z" fill="${fill}"/>`
         : `<rect x="${x}" y="${y1}" width="${w}" height="${h}" fill="${fill}"/>`;
@@ -740,13 +776,13 @@ function renderActivity(s) {
   for (let t = 0; t < ticks; t++) { const i = Math.round(t * (nb - 1) / Math.max(1, ticks - 1)); const anchor = t === 0 ? 'start' : t === ticks - 1 ? 'end' : 'middle'; const xx = anchor === 'start' ? padL + i * bw : anchor === 'end' ? padL + (i + 1) * bw : padL + i * bw + bw / 2; out += `<text x="${xx}" y="${H - 5}" text-anchor="${anchor}">${fmtHM(b0 + i * bms)}</text>`; }
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.innerHTML = out;
   svg.querySelectorAll('.hit').forEach((el) => {
-    el.onmousemove = (e) => { const i = +el.dataset.i, b = buckets[i]; const rows = keys.filter((k) => b.get(k)).sort((a, c) => b.get(c) - b.get(a)).map((k) => `<div><span class="swatch" style="background:${k === 'other' ? 'var(--other)' : colorFor(k)}"></span> ${esc(k === 'other' ? 'Others' : nameFor(k))} — ${fmtDur(b.get(k))}</div>`).join('');
+    el.onmousemove = (e) => { const i = +el.dataset.i, b = buckets[i]; const rows = keys.filter((k) => b.get(k)).sort((a, c) => b.get(c) - b.get(a)).map((k) => `<div><span class="swatch" style="background:${colorFor(k)}"></span> ${esc(nameFor(k))} — ${fmtDur(b.get(k))}</div>`).join('');
       showTip(e, `<div class="t">${fmtHM(b0 + i * bms)}–${fmtHM(b0 + (i + 1) * bms)}</div>${rows || '<div>Quiet</div>'}`); };
     el.onmouseleave = hideTip;
   });
-  $('#act-legend').innerHTML = keys.filter((k) => k === 'other' ? [...colorIndex.values()].some((v) => v >= 8) : true)
-    .map((k) => `<span data-k="${esc(k)}" class="${filter && filter !== k ? 'dim' : ''}"><span class="swatch" style="background:${k === 'other' ? 'var(--other)' : colorFor(k)}"></span>${esc(k === 'other' ? 'Others' : nameFor(k))}</span>`).join('');
-  document.querySelectorAll('#act-legend span[data-k]').forEach((el) => { if (el.dataset.k !== 'other') el.onclick = () => setFilter(el.dataset.k); });
+  $('#act-legend').innerHTML = keys
+    .map((k) => `<span data-k="${esc(k)}" class="${filter && filter !== k ? 'dim' : ''}"><span class="swatch" style="background:${colorFor(k)}"></span>${esc(nameFor(k))}</span>`).join('');
+  document.querySelectorAll('#act-legend span[data-k]').forEach((el) => { el.onclick = () => setFilter(el.dataset.k); });
 }
 document.querySelectorAll('#act-range button').forEach((b) => b.onclick = () => { range = +b.dataset.r; document.querySelectorAll('#act-range button').forEach((x) => x.classList.toggle('on', x === b)); renderActivity(stats()); });
 
@@ -756,29 +792,23 @@ function renderTimeline(s) {
   const endT = isToday() ? Date.now() : (lines[lines.length - 1]?.end || Date.now());
   const startT = endT - 10 * 60000;
   const recent = lines.filter((r) => r.end > startT && own(r));
-  let keys = [...new Set(recent.map((r) => keyOf.get(r)))].sort((a, b) => colorIndex.get(a) - colorIndex.get(b));
+  const keys = [...new Set(recent.map((r) => keyOf.get(r)))].sort((a, b) => colorIndex.get(a) - colorIndex.get(b));
+  // A sized panel (compact mode) fills its slot; lanes shrink to fit but never
+  // below a readable 14 px. With more people than fit, the panel scrolls.
   const sized = !!svg.closest('.card.grow');
-  if (sized) {   // a sized panel: keep the most active people that fit at a readable lane height
-    const fit = Math.max(1, Math.floor((Math.max(48, svg.parentElement.clientHeight - 14) - 22) / 13));
-    if (keys.length > fit) {
-      const talk = new Map(); for (const r of recent) talk.set(keyOf.get(r), (talk.get(keyOf.get(r)) || 0) + dur(r));
-      const keep = new Set([...talk].sort((a, b) => b[1] - a[1]).slice(0, fit).map((x) => x[0]));
-      keys = keys.filter((k) => keep.has(k));
-    }
-  }
-  // compact mode: lanes shrink so the chart always fits its slot
-  const room = sized ? Math.max(48, svg.parentElement.clientHeight - 14) : Infinity;   // fill the panel, no taller
-  const lane = Math.max(sized ? 9 : 7, Math.min(sized ? 26 : 18, Math.floor((room - 22) / Math.max(1, keys.length)))), padL = 110, padB = 18, H = Math.max(40, keys.length * lane + padB + 4);
+  const room = sized ? Math.max(48, svg.parentElement.clientHeight - 14) : Infinity;
+  const lane = Math.max(14, Math.min(sized ? 26 : 18, Math.floor((room - 22) / Math.max(1, keys.length)))), padL = 110, padB = 18, H = Math.max(40, keys.length * lane + padB + 4);
   svg.setAttribute('height', H); svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   if (!keys.length) { svg.innerHTML = `<text x="${W / 2}" y="22" text-anchor="middle">Nobody has spoken in the last 10 minutes</text>`; return; }
   const x = (t) => padL + (W - padL - 4) * (t - startT) / (endT - startT);
   let out = '';
   keys.forEach((k, i) => {
     const yy = 2 + i * lane;
-    out += `<text x="${padL - 8}" y="${yy + 12}" text-anchor="end" style="fill:var(--text-secondary)">${esc(Array.from(nameFor(k)).slice(0, 16).join(''))}</text><line x1="${padL}" x2="${W}" y1="${yy + 8}" y2="${yy + 8}" stroke="var(--grid)"/>`;
+    const nm = Array.from(nameFor(k)), short = nm.length > 16 ? nm.slice(0, 15).join('') + '…' : nm.join('');
+    out += `<text x="${padL - 8}" y="${yy + 12}" text-anchor="end" style="fill:var(--text-secondary)"><title>${esc(nameFor(k))}</title>${esc(short)}</text><line x1="${padL}" x2="${W}" y1="${yy + 8}" y2="${yy + 8}" stroke="var(--grid)"/>`;
   });
   recent.forEach((r, idx) => {
-    const i = keys.indexOf(keyOf.get(r)); if (i < 0) return;   // (someone left out to fit)
+    const i = keys.indexOf(keyOf.get(r));
     const yy = 2 + i * lane + 2;
     const x0 = Math.max(padL, x(r.t)), x1 = Math.max(x0 + 3, x(r.end));
     out += `<rect class="u" data-i="${idx}" x="${x0}" y="${yy}" width="${x1 - x0}" height="12" rx="4" fill="${colorFor(keyOf.get(r))}" ${filter && filter !== keyOf.get(r) ? 'opacity=".25"' : ''}/>`;
@@ -861,14 +891,64 @@ function renderState() {
   const ppl = [...st.people].sort((a, b) => (b.talking - a.talking) || (b.lastSeen - a.lastSeen));
   for (const p of ppl) if (!/^user-\d{4}$/.test(p.name)) { latestName.set(p.user, p.name); names[p.user] = p.name; }
   $('#nowmeta').textContent = ppl.length ? `${ppl.filter((p) => p.talking).length} talking · ${ppl.length} heard recently` : '';
-  $('#now').innerHTML = ppl.length ? ppl.map((p) => {
+  const nowHtml = ppl.length ? ppl.map((p) => {
     const c = colorIndex.has(p.user) ? colorFor(p.user) : 'var(--other)';
     const initials = (p.name.replace(/[^\p{L}\p{N} ]/gu, '').trim().split(/\s+/).map((w) => w[0]).join('').slice(0, 2) || '?').toUpperCase();
     return `<span class="chip${p.talking ? ' talking' : ''}" title="${p.talking ? 'Talking now' : 'Last heard ' + fmtTime(p.lastSeen)}"><span class="sw" style="background:${c}"></span>${esc(p.name)}</span>`;
   }).join('') : '<span class="empty" style="padding:4px 0">No one yet</span>';
+  // rebuilt (and re-folded) only when something changed, and never mid-click
+  const nowBox = $('#now');
+  if (nowHtml !== nowBox.dataset.html && !pressing(nowBox)) { nowBox.innerHTML = nowHtml; nowBox.dataset.html = nowHtml; fitChips(); }
   if (st.res?.cpu != null) { resHist.push({ t: st.now, ...st.res }); while (resHist.length && st.now - resHist[0].t > 300000) resHist.shift(); }
   renderResources(); refreshPop();
 }
+
+// A click on a button that gets rebuilt between mousedown and mouseup is lost
+// (the 1 s state refresh, the 5 s personalities one), so a box is left alone
+// while a pointer is pressed in it; the next refresh catches up.
+let pressedIn = null;
+addEventListener('pointerdown', (e) => { pressedIn = e.target.closest?.('#now, #pers') || null; }, true);
+addEventListener('click', () => { pressedIn = null; }, true);   // before the button's own handler, which may re-render
+addEventListener('pointerup', () => setTimeout(() => { pressedIn = null; }), true);   // released elsewhere: no click
+addEventListener('pointercancel', () => { pressedIn = null; }, true);
+const pressing = (box) => pressedIn === box;
+
+// Compact mode keeps "Live" to a few rows: the chips that don't fit fold into a
+// "+N" chip that opens the whole list (which then scrolls inside the panel).
+// Runs when the chips change, on resize and when compact mode is turned on or off.
+let nowOpen = false;
+const moreChip = document.createElement('button'); moreChip.className = 'chip more';
+moreChip.onclick = () => { nowOpen = !nowOpen; fitChips(); };
+function fitChips() {
+  const box = $('#now'); if (!box) return;
+  const keep = box.scrollTop;   // where the reader is in the opened list
+  moreChip.remove();
+  const chips = [...box.querySelectorAll('.chip')]; chips.forEach((c) => { c.style.display = ''; });
+  box.classList.remove('open');
+  if (!compact || chips.length < 2) return;
+  // Measure once, folded: where each chip ends against the room in the box.
+  box.scrollTop = 0;
+  const top = box.getBoundingClientRect().top + box.clientTop;
+  const room = box.clientHeight - (parseFloat(getComputedStyle(box).paddingBottom) || 0) + 1;
+  const ends = chips.map((c) => c.getBoundingClientRect().bottom - top);
+  let cut = ends.findIndex((b) => b > room);
+  if (cut < 0) { nowOpen = false; return; }      // everyone fits: nothing to fold, no "less"
+  if (nowOpen) {                                 // opened: "less" goes first, so it's there without scrolling
+    moreChip.textContent = 'less'; moreChip.title = 'Fold the list again';
+    box.prepend(moreChip); box.classList.add('open'); box.scrollTop = keep; return;
+  }
+  // Hide from the first chip that doesn't fit (the rest are heard less recently),
+  // then one more at a time until "+N" itself fits: usually no more than one step.
+  cut = Math.max(1, cut);
+  for (let i = cut; i < chips.length; i++) chips[i].style.display = 'none';
+  moreChip.title = 'Show everyone in the call'; box.appendChild(moreChip);
+  for (;;) {
+    moreChip.textContent = '+' + (chips.length - cut);
+    if (cut <= 1 || moreChip.getBoundingClientRect().bottom - top <= room) break;
+    chips[--cut].style.display = 'none';
+  }
+}
+addEventListener('resize', () => fitChips());
 
 function spark(vals, max) {
   if (vals.length < 2) return '<svg></svg>';
@@ -1707,18 +1787,37 @@ function persCandidates() {
   const last = new Map(); for (const r of lines) last.set(keyOf.get(r), Math.max(last.get(keyOf.get(r)) || 0, r.end));
   return per.filter((p) => (last.get(p.k) || 0) > recent).slice(0, 3);
 }
+// The three cards are the top talkers; everyone else who spoke is one click away.
+let persRestOpen = false;
+function persRest(top) {
+  const shown = new Set(top.map((p) => p.k)), rest = stats().per.filter((p) => !shown.has(p.k));
+  if (!rest.length) return '';
+  const tog = `<button class="tog" title="${persRestOpen ? 'Fold the list' : 'Everyone else in this call: click a name for a read'}">${persRestOpen ? 'less' : '+' + rest.length + ' more'}</button>`;
+  // opened, "less" comes first so it can be reached without scrolling to the end
+  return `<div class="pers-rest">${persRestOpen ? tog + rest.map((p) => `<button data-k="${esc(p.k)}" title="Personality read of ${esc(nameFor(p.k))}"><span class="swatch" style="background:${colorFor(p.k)}"></span>${esc(nameFor(p.k))}</button>`).join('') : tog}</div>`;
+}
+// Rebuilt only when it changed and not mid-click (see pressing), so the 5 s
+// refresh doesn't swallow clicks or reset the scroll for nothing.
+function setPers(box, html) {
+  if (html === box.dataset.html || pressing(box)) return false;
+  box.innerHTML = html; box.dataset.html = html; return true;
+}
 function renderPers() {
   const box = $('#pers'); if (!box) return;
-  if (personaInfo && !personaInfo.available) { box.innerHTML = `<div class="pers-empty">${esc(personaInfo.reason || 'Not available on this computer.')}</div>`; return; }
+  if (personaInfo && !personaInfo.available) { setPers(box, `<div class="pers-empty">${esc(personaInfo.reason || 'Not available on this computer.')}</div>`); return; }
   const top = persCandidates();
-  if (!top.length) { box.innerHTML = '<div class="pers-empty">Appears once people have talked for a bit.</div>'; return; }
-  box.innerHTML = top.map((p) => {
+  if (!top.length) { setPers(box, '<div class="pers-empty">Appears once people have talked for a bit.</div>'); return; }
+  const restTop = box.querySelector('.pers-rest')?.scrollTop || 0;   // keep the reader's place across the 5 s refresh
+  const html = top.map((p) => {
     const o = persOverview.get(p.k);
     const body = o?.sentence ? `<div class="ps">${esc(o.sentence)}</div><div class="pt">${esc(o.traits || '')}${o.at ? ` · ${ago(o.at)}` : ''}</div>`
       : `<div class="pt">${o?.status === 'error' ? 'Couldn\'t read this one.' : o ? 'Reading…' : 'Waiting…'}</div>`;
-    return `<button class="pp" data-k="${esc(p.k)}" title="Open the full read"><span class="pn"><span class="swatch" style="background:${colorFor(p.k)}"></span>${esc(nameFor(p.k))}</span>${body}</button>`;
-  }).join('');
-  box.querySelectorAll('.pp').forEach((b) => b.onclick = () => personaRead(b.dataset.k));
+    return `<button class="pp" data-k="${esc(p.k)}" title="${esc(nameFor(p.k))}: open the full read"><span class="pn"><span class="swatch" style="background:${colorFor(p.k)}"></span>${esc(nameFor(p.k))}</span>${body}</button>`;
+  }).join('') + persRest(top);
+  if (!setPers(box, html)) return;
+  box.querySelectorAll('.pp, .pers-rest [data-k]').forEach((b) => b.onclick = () => personaRead(b.dataset.k));
+  if (box.querySelector('.pers-rest')) box.querySelector('.pers-rest').scrollTop = restTop;
+  box.querySelector('.pers-rest .tog')?.addEventListener('click', () => { persRestOpen = !persRestOpen; renderPers(); });
 }
 async function refreshPers() {
   if (!panelShown('persona') || SHARE || persBusy || document.hidden || serverSettings?.personality === false) return;
@@ -1849,6 +1948,7 @@ function setCompact(on, persist = true) {
   if (persist && !SHARE) try { localStorage.setItem('ct-compact', compact ? '1' : '0'); } catch {}
   requestAnimationFrame(() => { const s = stats(); renderActivity(s); renderTimeline(s); });
   applyLayout();
+  fitChips();   // fold or unfold "Live" now, even with no state coming in (server stopped)
   if (panelShown('persona')) setTimeout(() => { renderPers(); refreshPers(); }, 800);
 }
 $('#toggle-compact').onclick = () => setCompact(!compact);
@@ -1928,6 +2028,11 @@ if (window.ResizeObserver) {
     raf = requestAnimationFrame(() => { if (lines.length) { const s = stats(); renderActivity(s); renderTimeline(s); } });
   });
   ro.observe($('#act').parentElement); ro.observe($('#tl').parentElement);
+  // "Live" re-folds when its panel gets narrower or wider without a window resize
+  // (sidebar, panel layout). Outer width only: folding changes its own height, and
+  // opening adds a scrollbar (which clientWidth would count, re-folding mid-click).
+  let nowW = -1;
+  new ResizeObserver(() => { const w = $('#now').offsetWidth; if (w !== nowW) { nowW = w; fitChips(); } }).observe($('#now'));
 }
 
 renderState(); connect();
