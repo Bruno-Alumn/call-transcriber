@@ -109,7 +109,7 @@ document.getElementById('join').onclick = () => (async () => {
   addSpeaker('bob', b, 2.0, '222222222222222222-1002');
   addSpeaker('carol', c3, 2.5, '333333333333333333-1003');
   await negotiate();
-  window.__present = { '700000000000000001': ['111111111111111111', '222222222222222222', '333333333333333333'] };
+  window.__present = { '700000000000000001': ['111111111111111111', '222222222222222222', '333333333333333333'], '700000000000000002': ['444444444444444444'] };
   window.__harness = { status: 'phase1' };
   // Phase 2: you move to another voice channel; Dave talks there.
   await wait(9000);
