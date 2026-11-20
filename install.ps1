@@ -4,15 +4,15 @@
 #   2. installs Python 3.12 + the server's packages into server\.venv
 #   3. with an NVIDIA GPU: adds the GPU speech engine (PyTorch + CUDA)
 #   4. downloads the speech model
-#   5. creates Start-menu and desktop shortcuts
-#   6. shows how to load the Chrome extension
+#   5. installs the desktop app (Electron, with Discord built in)
+#   6. creates Start-menu and desktop shortcuts
 
 param([switch]$NoPrompt)   # -NoPrompt: unattended (no questions, no windows opened)
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Py   = Join-Path $Root 'server\.venv\Scripts\python.exe'
-$PyW  = Join-Path $Root 'server\.venv\Scripts\pythonw.exe'
-$App  = Join-Path $Root 'app\windows\call_transcriber.pyw'
+$Desk = Join-Path $Root 'app\desktop'
+$Exe  = Join-Path $Desk 'node_modules\electron\dist\electron.exe'
 $Icon = Join-Path $Root 'app\windows\icon.ico'
 
 function Step($text) { Write-Host ''; Write-Host "==> $text" -ForegroundColor Cyan }
@@ -69,30 +69,40 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host 'The model will be downloaded the first time the app starts instead.' -ForegroundColor Yellow
 }
 
-# 5. Shortcuts -------------------------------------------------------------
+# 5. Desktop app ----------------------------------------------------------
+Step 'Installing the app (with Discord built in)'
+if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        Write-Host 'Installing Node.js (needed once to set up the app)'
+        winget install --id OpenJS.NodeJS.LTS -e --silent --accept-source-agreements --accept-package-agreements
+        $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
+    }
+    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { throw 'Node.js is needed: install it from https://nodejs.org and run install.cmd again.' }
+}
+Push-Location $Desk
+try {
+    $ErrorActionPreference = 'Continue'
+    npm ci --no-audit --no-fund --loglevel=error
+    $ErrorActionPreference = 'Stop'
+    if (-not (Test-Path $Exe)) { throw 'Installing the app failed (see the messages above).' }
+} finally { Pop-Location }
+
+# 6. Shortcuts -------------------------------------------------------------
 Step 'Creating Start menu and desktop shortcuts'
 $shell = New-Object -ComObject WScript.Shell
 $places = @([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Desktop'))
 foreach ($dir in $places) {
     $lnk = $shell.CreateShortcut((Join-Path $dir 'Call Transcriber.lnk'))
-    $lnk.TargetPath = $PyW
-    $lnk.Arguments = '"' + $App + '"'
+    $lnk.TargetPath = $Exe
+    $lnk.Arguments = '"' + $Desk + '"'
     $lnk.WorkingDirectory = $Root
     $lnk.IconLocation = $Icon
     $lnk.Description = 'Live transcripts of Discord voice calls'
     $lnk.Save()
 }
 
-# 6. Chrome extension ------------------------------------------------------
-Step 'Last step: load the Chrome extension (one time)'
-Write-Host '  1. In Chrome, open  chrome://extensions'
-Write-Host '  2. Turn on "Developer mode" (top right)'
-Write-Host '  3. Click "Load unpacked" and choose this folder:'
-Write-Host "       $Root\extension" -ForegroundColor Green
-if (-not $NoPrompt) { Start-Process explorer.exe (Join-Path $Root 'extension') }
-
 Write-Host ''
-Write-Host 'Done. Start "Call Transcriber" from the Start menu or desktop, then join a Discord voice channel in Chrome.' -ForegroundColor Green
+Write-Host 'Done. Start "Call Transcriber" from the Start menu or desktop, sign in to Discord in its Discord window (once), and join a voice channel.' -ForegroundColor Green
 if ($NoPrompt) { return }
 $answer = Read-Host 'Start Call Transcriber now? (Y/n)'
-if ($answer -ne 'n' -and $answer -ne 'N') { Start-Process $PyW -ArgumentList ('"' + $App + '"') -WorkingDirectory $Root }
+if ($answer -ne 'n' -and $answer -ne 'N') { Start-Process $Exe -ArgumentList ('"' + $Desk + '"') -WorkingDirectory $Root }

@@ -19,3 +19,4 @@ test/test-results/
 events/
 # abandoned bot-account approach, kept locally only
 bot/
+server-test-*.log

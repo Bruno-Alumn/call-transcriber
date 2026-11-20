@@ -377,7 +377,8 @@ class Updater:
                 if rc != 0:
                     return {"ok": False, "error": "Couldn't fast-forward to " + tag + ": " + out[-200:]}
                 result = {"ok": True, "from": st["current"], "version": self.current(), "files": len(files),
-                          "rebuildMac": any(f.startswith("app/mac/") for f in files),
+                          "rebuildMac": any(f.startswith("app/mac/") or f.startswith("app/desktop/package") for f in files),
+                          "app": any(f.startswith("app/desktop/package") for f in files),   # new Electron / npm packages
                           "deps": any(f in ("server/pyproject.toml", "server/uv.lock") for f in files),
                           "extension": any(f.startswith("extension/") for f in files),
                           "server": any(f.startswith("server/") for f in files)}
@@ -443,6 +444,7 @@ class Hub:
                "named": sum(1 for n in (st.get("live") or []) if not re.fullmatch(r"\d{15,22}", str(n))),
                "audio": st.get("ctx"), "hook": st.get("v"), "errors": st.get("errors") or [],
                "channel": st.get("channel") if age < 15 else None,
+               "client": st.get("client") or "chrome",           # "app": Discord inside the desktop app
                "lastReport": int(self.ext_status_at * 1000) if self.ext_status_at else None}
         return {"type": "state", "model": self.model, "engine": getattr(self, "engine", None), "modelReady": self.model_ready,
                 "modelId": getattr(self, "model_id", None), "modelLoading": getattr(self, "loading", None),

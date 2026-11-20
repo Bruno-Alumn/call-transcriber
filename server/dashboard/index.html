@@ -137,6 +137,9 @@ header .pills { flex-wrap: nowrap; flex: none; }
 .pills { display: flex; gap: 8px; flex-wrap: wrap; }
 .pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 999px; background: var(--surface-1);
   border: 1px solid var(--border); color: var(--text-secondary); font-size: 12.5px; white-space: nowrap; }
+.pill.discord-btn { background: #5865f2; color: #fff; border-color: transparent; font-weight: 600; }
+.pill.discord-btn:hover { background: #4752c4; }
+.pill[hidden] { display: none; }
 .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
 .pill.ok .dot { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 22%, transparent); }
 .pill.warn .dot { background: var(--warn); }
@@ -277,6 +280,7 @@ svg text { fill: var(--text-muted); font-size: 11px; font-family: inherit; }
       <button class="pill" id="p-server" aria-haspopup="dialog"><span class="dot"></span><span>Server</span></button>
       <button class="pill" id="p-ext" aria-haspopup="dialog"><span class="dot"></span><span>Extension</span></button>
       <button class="pill" id="p-model" aria-haspopup="dialog"><span class="dot"></span><span>Model</span></button>
+      <button class="pill discord-btn" id="p-discord" hidden title="Show the Discord window (⌘D / Ctrl+D)"><svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M19.3 5.3A16.6 16.6 0 0 0 15.2 4l-.5 1a15 15 0 0 0-5.4 0L8.8 4a16.5 16.5 0 0 0-4.1 1.3C2.1 9.2 1.4 13 1.7 16.7a16.7 16.7 0 0 0 5 2.6l1.1-1.7a11 11 0 0 1-1.7-.8l.4-.3a11.9 11.9 0 0 0 11 0l.4.3-1.7.8 1.1 1.7a16.6 16.6 0 0 0 5-2.6c.4-4.3-.7-8-3-11.4ZM8.7 14.5c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm6.6 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z"/></svg><span>Discord</span></button>
     </div>
   </header>
   <div class="banner" id="banner" role="status"></div>
@@ -569,12 +573,17 @@ function renderWords() {
 }
 
 // ------------------------------------------------------------ live state
-// Inside the Mac app (WKWebView bridge) or the Windows app (pywebview bridge).
-let inApp = !!window.webkit?.messageHandlers?.app || !!window.pywebview;
+// Inside the desktop app (window.ctApp, with Discord built in), or the older
+// Mac app (WKWebView bridge) / Windows app (pywebview bridge).
+const desk = window.ctApp || null;
+let inApp = !!desk || !!window.webkit?.messageHandlers?.app || !!window.pywebview;
 addEventListener('pywebviewready', () => { inApp = true; refreshPop?.(); });
-const appCmd = (action) => window.pywebview?.api ? window.pywebview.api.server(action) : window.webkit.messageHandlers.app.postMessage({ action });
+const appCmd = (action) => desk ? desk.server(action) : window.pywebview?.api ? window.pywebview.api.server(action) : window.webkit.messageHandlers.app.postMessage({ action });
+let appState = {};
+desk?.onState((s) => { appState = s || {}; renderState?.(); refreshPop?.(); });
 // Save a file: native Save dialog in the apps, a download in a browser.
 function saveFile(name, content, mime = 'text/plain') {
+  if (desk) return desk.save(name, content);
   if (window.pywebview?.api?.save) return window.pywebview.api.save(name, content);
   if (window.webkit?.messageHandlers?.app) return window.webkit.messageHandlers.app.postMessage({ action: 'save', name, content });
   const a = document.createElement('a');
@@ -582,6 +591,7 @@ function saveFile(name, content, mime = 'text/plain') {
   a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
 }
 function appRelaunch(opts) {
+  if (desk) return desk.relaunch({ rebuild: !!opts.rebuildMac, deps: !!opts.deps, app: !!opts.app });
   if (window.pywebview?.api?.relaunch) return window.pywebview.api.relaunch(!!opts.rebuildMac, !!opts.deps);
   if (window.webkit?.messageHandlers?.app) return window.webkit.messageHandlers.app.postMessage({ action: 'relaunch', rebuild: !!opts.rebuildMac, deps: !!opts.deps });
 }
@@ -590,6 +600,12 @@ const resHist = [];   // [{t, cpu, rss}] last 5 minutes
 
 function extSummary(st) {
   const e = st.ext || {};
+  if (desk && (!e.connected || e.client === 'app')) {      // Discord inside this app
+    if (appState.paused || e.paused) return ['warn', 'Discord · paused'];
+    if (!e.discordTab) return ['warn', 'Discord · loading'];
+    if (!e.inCall) return ['ok', 'Discord · not in a call'];
+    return ['ok', `Discord · ${e.streams} in call`];
+  }
   if (!e.connected) return ['bad', 'Extension not connected'];
   if (!e.discordTab) return ['warn', 'Extension ready · open Discord'];
   if (e.paused) return ['warn', 'Extension paused'];
@@ -654,6 +670,20 @@ function popHtml(which) {
   if (which === 'ext') {
     if (!st) return `<h3>Extension</h3><div class="hint">Waiting for the server.</div>`;
     const e = st.ext || {};
+    if (desk && (!e.connected || e.client === 'app')) {
+      const hint = appState.paused ? 'Paused: nothing is being transcribed until you resume.'
+        : !e.discordTab ? 'Discord is loading (sign in once in the Discord window).'
+        : !e.inCall ? 'Join a voice channel in the Discord window and transcription starts automatically.' : 'Transcribing everyone in the call.';
+      return `<h3>Discord (built in)</h3><dl>
+        <dt>Window</dt><dd>${appState.discordOpen ? 'Open' : 'Hidden (still connected)'}</dd>
+        <dt>In a call</dt><dd>${e.inCall ? 'Yes' : 'No'}</dd>
+        <dt>Channel</dt><dd>${e.channel ? esc(e.channel.name || '') + (e.channel.guildName ? ' · ' + esc(e.channel.guildName) : '') : '—'}</dd>
+        <dt>People</dt><dd>${e.streams || 0} streams · ${e.named || 0} named</dd>
+        <dt>Last report</dt><dd>${e.lastReport ? ago(e.lastReport) : '—'}</dd>
+        ${e.errors?.length ? `<dt>Errors</dt><dd>${esc(e.errors.join('; ')).slice(0, 120)}</dd>` : ''}</dl>
+        <div class="hint">${hint}</div>
+        <div class="btns"><button data-desk="discord">Show Discord</button><button data-desk="pause">${appState.paused ? 'Resume' : 'Pause'}</button></div>`;
+    }
     const hint = !e.connected ? 'Chrome isn\'t connected. Make sure Chrome is open and the Discord Transcriber extension is enabled in chrome://extensions.'
       : !e.discordTab ? 'Open discord.com in Chrome (or reload the Discord tab).'
       : e.paused ? 'Paused. Click the extension\'s toolbar icon to resume.'
@@ -714,6 +744,12 @@ function refreshPop() { if (popFor) { $('#pop').innerHTML = popHtml(popFor); wir
 function closePop() { popFor = null; $('#pop').style.display = 'none'; }
 $('#p-server').onclick = (e) => { e.stopPropagation(); openPop('server', e.currentTarget); };
 $('#p-ext').onclick = (e) => { e.stopPropagation(); openPop('ext', e.currentTarget); };
+if (desk) { $('#p-discord').hidden = false; $('#p-discord').onclick = () => desk.openDiscord(); }
+document.addEventListener('click', (e) => {
+  const b = e.target.closest?.('[data-desk]'); if (!b || !desk) return;
+  if (b.dataset.desk === 'discord') desk.openDiscord();
+  if (b.dataset.desk === 'pause') desk.setPaused(!appState.paused);
+});
 $('#p-model').onclick = (e) => { e.stopPropagation(); loadModels(); openPop('model', e.currentTarget); };
 document.addEventListener('click', (e) => { if (popFor && !$('#pop').contains(e.target)) closePop(); });
 addEventListener('keydown', (e) => { if (e.key === 'Escape') closePop(); });
@@ -726,7 +762,7 @@ function renderBanner() {
   const b = $('#banner');
   const applied = upd?.applied;
   if (applied?.ok) {
-    b.innerHTML = `<span>✓ Updated to <b>v${esc(applied.version)}</b>.</span><span class="notes">${applied.extension && liveState?.ext?.connected ? 'The Chrome extension reloaded itself. ' : applied.extension ? 'Reload the Chrome extension in chrome://extensions. ' : ''}${inApp ? 'Restart the app to finish.' : 'Restart the app (or the server) to finish.'}</span>
+    b.innerHTML = `<span>✓ Updated to <b>v${esc(applied.version)}</b>.</span><span class="notes">${desk && liveState?.ext?.client !== 'chrome' ? '' : applied.extension && liveState?.ext?.connected ? 'The Chrome extension reloaded itself. ' : applied.extension ? 'Reload the Chrome extension in chrome://extensions. ' : ''}${inApp ? 'Restart the app to finish.' : 'Restart the app (or the server) to finish.'}</span>
       ${inApp ? '<button id="b-restart">Restart now</button>' : ''}`;
     b.style.display = 'flex';
     $('#b-restart') && ($('#b-restart').onclick = () => { $('#b-restart').textContent = 'Restarting…'; appRelaunch(applied); });
