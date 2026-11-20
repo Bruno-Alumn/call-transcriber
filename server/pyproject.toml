@@ -18,6 +18,7 @@ dependencies = [
     "pillow>=10; sys_platform == 'win32'",
     "soundfile>=0.14.0",
     "websockets>=17.4",
+    "mlx-vlm>=0.7.11 ; sys_platform == 'darwin'",
 ]
 
 [tool.uv]

@@ -300,6 +300,25 @@ body.compact .c-tl .body { overflow: hidden; }
 .share body.compact .col { grid-template-areas: "live live" "talk act" "words tl"; }
 .share .where { font-size: 14px; }
 .share header::after { content: "Live transcript · Call Transcriber"; margin-left: auto; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+/* ---------- personality read */
+.bar-row { grid-template-columns: 130px 1fr 92px auto; }
+body.compact .bar-row { grid-template-columns: minmax(0, 110px) 1fr auto auto; }
+.bar-row .read { font: inherit; font-size: 11px; padding: 1px 7px; border-radius: 4px; border: 1px solid var(--border); background: transparent;
+  color: var(--text-muted); cursor: pointer; opacity: 0; transition: opacity .12s; }
+.bar-row:hover .read, .bar-row .read:focus-visible { opacity: 1; }
+.bar-row .read:hover { color: var(--text-primary); border-color: var(--text-muted); }
+@media (hover: none) { .bar-row .read { opacity: 1; } }
+.share .bar-row .read { display: none; }
+.modal.persona { width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 48px); display: flex; flex-direction: column; }
+.modal.persona .psub { color: var(--text-muted); font-size: 12px; margin: -4px 0 10px; }
+.modal.persona .pbody { overflow-y: auto; min-height: 60px; font-size: 13px; line-height: 1.5; }
+.modal.persona .pbody p { margin: 0 0 8px; color: var(--text-primary); }
+.modal.persona .pbody ul { margin: 0 0 10px; padding-left: 18px; }
+.modal.persona .pbody li { margin: 2px 0; }
+.modal.persona .pnote { color: var(--text-muted); font-size: 11.5px; margin-top: 10px; }
+.pwait { display: flex; align-items: center; gap: 10px; color: var(--text-secondary); padding: 18px 0; }
+.pwait .s { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--accent); animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 /* ---------- house style: flat, dense, typographic (overrides the defaults above) */
 :root { --radius: 6px; --shadow: none; --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; }
 body { font-size: 13.5px; }
@@ -529,7 +548,7 @@ function renderFeed(onlyAppend = false) {
   for (const r of slice) {
     const k = keyOf.get(r);
     const cont = prev && keyOf.get(prev) === k && r.t - prev.end < 15000;
-    html.push(`<div class="line${cont ? ' cont' : ''}${onlyAppend ? ' new' : ''}" data-t="${r.t}"><div class="time">${fmtTime(r.t)}</div><div>${cont ? '' : `<span class="who"><span class="swatch" style="background:${colorFor(k)}"></span>${esc(nameFor(k))}</span>`}<span class="text">${highlight(r.text)}</span></div></div>`);
+    html.push(`<div class="line${cont ? ' cont' : ''}${onlyAppend ? ' new' : ''}" data-t="${r.t}"><div class="time">${fmtTime(r.t)}</div><div>${cont ? '' : `<span class="who" data-k="${esc(k)}" title="Right-click for a personality read"><span class="swatch" style="background:${colorFor(k)}"></span>${esc(nameFor(k))}</span>`}<span class="text">${highlight(r.text)}</span></div></div>`);
     prev = r;
   }
   feed.insertAdjacentHTML('beforeend', html.join(''));
@@ -579,9 +598,11 @@ function renderBars(s) {
       <span class="name"><span class="swatch" style="background:${colorFor(p.k)}"></span>${esc(nameFor(p.k))}</span>
       <span class="track"><span class="fill" style="display:block;width:${(100 * p.talk / max).toFixed(1)}%;background:${colorFor(p.k)}"></span></span>
       <span class="num">${fmtDur(p.talk)} · ${Math.round(100 * p.talk / total)}%</span>
+      <button class="read" data-read="${esc(p.k)}" title="Personality read of ${esc(nameFor(p.k))} from this call (local AI, just for fun)">Read</button>
     </div>`).join('') || '<div class="empty" style="padding:8px">No one has spoken yet</div>';
   if (s.per.length > 12) $('#bars').insertAdjacentHTML('beforeend', `<div style="color:var(--text-muted);font-size:12px">+ ${s.per.length - 12} more</div>`);
   document.querySelectorAll('.bar-row').forEach((el) => el.onclick = () => setFilter(el.dataset.k));
+  document.querySelectorAll('.bar-row .read').forEach((b) => b.onclick = (e) => { e.stopPropagation(); personaRead(b.dataset.read); });
 }
 function setFilter(k) { filter = filter === k ? null : k; renderAll(); }
 
@@ -1122,6 +1143,69 @@ $('#calls').addEventListener('contextmenu', (e) => {
 document.addEventListener('click', (e) => { if (!$('#ctx').contains(e.target)) closeCtx(); });
 addEventListener('keydown', (e) => { if (e.key === 'Escape') closeCtx(); });
 addEventListener('blur', closeCtx);
+// ------------------------------------------------------------ personality read (local LLM)
+let personaInfo = null;
+fetch('/api/persona/info').then((r) => r.json()).then((i) => { personaInfo = i; }).catch(() => {});
+document.addEventListener('contextmenu', (e) => {
+  const w = e.target.closest?.('.line .who'); if (!w || SHARE) return;
+  e.preventDefault(); personaRead(w.dataset.k);
+});
+function personaHtml(text) {
+  // tiny, safe markdown: escape first, then **bold** and "- " list items
+  const out = []; let list = false;
+  for (const raw of esc(text).split('\n')) {
+    const line = raw.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').trim();
+    if (/^[-•*] /.test(line)) { if (!list) { out.push('<ul>'); list = true; } out.push('<li>' + line.slice(2) + '</li>'); continue; }
+    if (list) { out.push('</ul>'); list = false; }
+    if (line) out.push('<p>' + line + '</p>');
+  }
+  if (list) out.push('</ul>');
+  return out.join('');
+}
+async function personaRead(k) {
+  const c = currentCall(); if (!c) return;
+  const name = nameFor(k), user = /^\d{15,22}$/.test(k) ? k : '';
+  const speaker = user ? '' : String(k).replace(/^name:/, '');
+  const bg = $('#modal'), box = bg.firstElementChild;
+  box.classList.add('persona');
+  let closed = false, jobId = null;
+  const close = () => { closed = true; bg.style.display = 'none'; box.classList.remove('persona'); removeEventListener('keydown', key); };
+  const key = (e) => { if (e.key === 'Escape') close(); };
+  addEventListener('keydown', key);
+  bg.onclick = (e) => { if (e.target === bg) close(); };
+  const frame = (sub, body, btns = '') => {
+    box.innerHTML = `<h3>Personality read · ${esc(name)}</h3><div class="psub">${sub}</div><div class="pbody">${body}</div>
+      <div class="pnote">A small AI model on this computer, guessing from a few lines. Just for fun; nothing leaves your computer.</div>
+      <div class="btns">${btns}<button data-a="close">Close</button></div>`;
+    box.querySelectorAll('button').forEach((b) => b.onclick = () => {
+      if (b.dataset.a === 'close') close();
+      if (b.dataset.a === 'again') run();
+      if (b.dataset.a === 'copy') navigator.clipboard?.writeText(box.querySelector('.pbody').innerText).then(() => { b.textContent = 'Copied'; });
+    });
+  };
+  bg.style.display = 'grid';
+  async function run() {
+    if (personaInfo && !personaInfo.available) { frame('', `<p>${esc(personaInfo.reason || 'Not available on this computer.')}</p>`); return; }
+    frame('Starting…', '<div class="pwait"><span class="s"></span>Reading what they said…</div>');
+    const q = new URLSearchParams({ day: c.day, from: c.start, to: c.end, ch: c.ch || '', user, name: speaker || name });
+    const r = await fetch('/api/persona/start?' + q, { method: 'POST', headers: { 'X-CT': '1' } }).then((x) => x.json()).catch((e) => ({ error: String(e) }));
+    if (closed) return;
+    if (r.error) { frame('', `<p>${esc(r.error)}</p>`); return; }
+    jobId = r.id;
+    const sub = `From ${r.lines} lines (${r.words} words) ${esc(name)} said in this call`;
+    while (!closed && jobId === r.id) {
+      const j = await fetch('/api/persona?id=' + r.id).then((x) => x.json()).catch(() => null);
+      if (!j || closed) return;
+      if (j.status === 'done') { frame(`${sub} · ${esc(j.model)}, ${j.seconds}s`, personaHtml(j.text), '<button data-a="copy">Copy</button><button data-a="again">Read again</button>'); return; }
+      if (j.status === 'error') { frame(sub, `<p>${esc(j.error || 'Something went wrong.')}</p>`, '<button data-a="again">Try again</button>'); return; }
+      const msg = j.status === 'loading' ? `Loading ${esc(j.model)}… (the first time it downloads about 2 GB)` : 'Thinking…';
+      if (!box.querySelector('.pwait') || box.querySelector('.pwait').dataset.m !== j.status)
+        frame(sub, `<div class="pwait" data-m="${j.status}"><span class="s"></span>${msg}</div>`);
+      await new Promise((res) => setTimeout(res, 700));
+    }
+  }
+  run();
+}
 function confirmBox(title, body, note, okLabel) {
   return new Promise((resolve) => {
     const bg = $('#modal'), box = bg.firstElementChild;

@@ -14,6 +14,7 @@ import sys
 import asyncio
 import base64
 import datetime as dt
+import gc
 import json
 import os
 import queue
@@ -598,6 +599,172 @@ def save_settings(**kw):
     settings_path().write_text(json.dumps(st, indent=1), encoding="utf-8")
 
 
+# ---------------------------------------------------------------- personality read
+# A quick, for-fun personality sketch of one person from what they said in a
+# call, written by a small local language model (Liquid AI LFM3-1.7B). Loaded
+# on first use, unloaded after 10 idle minutes.
+LLM_REPOS = {"mlx": "LiquidAI/LFM3-1.7B-MLX-8bit", "torch": "LiquidAI/LFM3-1.7B"}
+LLM_NAME = "LFM3 1.7B"
+PERSONA_SYSTEM = """You write a quick, light-hearted personality read of one person, based only on things they said in a voice call. It is a playful guess, not an assessment.
+
+Rules:
+- Base every point on what they actually said. Quote short bits as evidence.
+- Never guess or mention health, mental health, sexuality, religion, politics, ethnicity, age, or other sensitive traits.
+- Be fair and kind. No insults, no diagnoses.
+- If the lines are few or generic, say the read is shaky.
+
+Answer in exactly this format and nothing else:
+**In a sentence:** <one sentence>
+
+**Big Five (rough guess)**
+- Openness: <low|medium|high> - <short reason>
+- Conscientiousness: <low|medium|high> - <short reason>
+- Extraversion: <low|medium|high> - <short reason>
+- Agreeableness: <low|medium|high> - <short reason>
+- Emotional stability: <low|medium|high> - <short reason>
+
+**Comes across as:** <three short traits, comma-separated>
+
+**Evidence:**
+- "<short quote>"
+- \"<short quote>\"
+
+Use two or three quotes, then stop."""
+
+
+def tidy_persona(text: str) -> str:
+    """Small models sometimes keep going after the format ends: keep one
+    Evidence section with at most three quotes, drop anything after it."""
+    out, in_ev, quotes = [], False, 0
+    for line in text.strip().splitlines():
+        if re.match(r"^\W*evidence", line, re.I):
+            if in_ev:
+                break
+            in_ev = True
+            out.append("**Evidence:**")
+            continue
+        if in_ev:
+            if line.strip().startswith(("-", "•", "*")):
+                quotes += 1
+                if quotes > 3:
+                    break
+            elif line.strip():
+                break
+        out.append(line)
+    return "\n".join(out).strip()
+
+
+class PersonalityReader:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.model = self.proc = None
+        self.engine = None
+        self.last_used = 0.0
+        self.jobs: dict[str, dict] = {}
+        threading.Thread(target=self._idle_unload, daemon=True).start()
+
+    @staticmethod
+    def engine_here() -> tuple[str | None, str]:
+        import platform
+        if sys.platform == "darwin" and platform.machine() == "arm64":
+            try:
+                import mlx_vlm  # noqa: F401
+                return "mlx", ""
+            except ImportError:
+                return None, "Install the Mac add-on: cd server && uv sync"
+        try:
+            import torch
+            if torch.cuda.is_available():
+                return "torch", ""
+        except Exception:
+            pass
+        return None, "Needs an Apple Silicon Mac or an NVIDIA graphics card."
+
+    def info(self) -> dict:
+        eng, why = self.engine_here()
+        return {"available": bool(eng), "engine": eng, "model": LLM_NAME, "reason": why, "loaded": self.model is not None}
+
+    def _load(self, eng: str):
+        if self.model is not None:
+            return
+        repo = LLM_REPOS[eng]
+        print(f"Personality read: loading {repo} …", flush=True)
+        if eng == "mlx":
+            from mlx_vlm import load
+            self.model, self.proc = load(repo)
+        else:
+            import torch
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            self.proc = AutoTokenizer.from_pretrained(repo)
+            self.model = AutoModelForCausalLM.from_pretrained(repo, dtype=torch.bfloat16, device_map="cuda")
+        self.engine = eng
+
+    def _generate(self, messages: list[dict]) -> str:
+        if self.engine == "mlx":
+            from mlx_vlm import generate
+            from mlx_vlm.prompt_utils import apply_chat_template
+            prompt = apply_chat_template(self.proc, self.model.config, messages, num_images=0)
+            out = generate(self.model, self.proc, prompt, max_tokens=420, temperature=0.3, repetition_penalty=1.1, verbose=False)
+            return (out.text if hasattr(out, "text") else str(out)).strip()
+        import torch
+        ids = self.proc.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt",
+                                            return_dict=True, enable_thinking=False).to("cuda")
+        with torch.inference_mode():
+            gen = self.model.generate(**ids, max_new_tokens=420, do_sample=True, temperature=0.3, top_p=0.9,
+                                      repetition_penalty=1.05)
+        return self.proc.decode(gen[0][ids["input_ids"].shape[1]:], skip_special_tokens=True).strip()
+
+    def _idle_unload(self):
+        while True:
+            time.sleep(30)
+            with self.lock:
+                if self.model is not None and time.time() - self.last_used > 600:
+                    self.model = self.proc = None
+                    gc.collect()
+                    print("Personality read: model unloaded (idle).", flush=True)
+
+    def start(self, day: str, t0: int, t1: int, ch: str, user: str, name: str) -> dict:
+        eng, why = self.engine_here()
+        if not eng:
+            return {"error": why}
+        recs, _ = day_data(day)
+        mine = [r for r in recs if t0 <= r["t"] <= t1 and (not ch or not r.get("ch") or r.get("ch") == ch)
+                and ((user and r.get("user") == user) or (not user and r.get("speaker") == name))]
+        said = [r["text"].strip() for r in mine if r.get("text", "").strip()]
+        words = sum(len(x.split()) for x in said)
+        if len(said) < 4 or words < 30:
+            return {"error": f"Not enough to go on yet: {name} has said {words} words in this call. Try again once they've talked a bit more."}
+        picked, total = [], 0                      # most recent lines, up to ~2500 words
+        for x in reversed(said):
+            total += len(x.split())
+            if total > 2500:
+                break
+            picked.append(x)
+        picked.reverse()
+        jid = os.urandom(6).hex()
+        job = {"id": jid, "status": "loading" if self.model is None else "thinking", "name": name,
+               "lines": len(picked), "words": sum(len(x.split()) for x in picked), "model": LLM_NAME, "started": time.time()}
+        self.jobs[jid] = job
+        messages = [{"role": "system", "content": PERSONA_SYSTEM},
+                    {"role": "user", "content": f"Name: {name}\nThings {name} said in this call, oldest first:\n"
+                                                + "\n".join("- " + x for x in picked)}]
+
+        def run():
+            try:
+                with self.lock:
+                    self._load(eng)
+                    job["status"] = "thinking"
+                    text = self._generate(messages)
+                    self.last_used = time.time()
+                job.update(status="done", text=tidy_persona(text), seconds=round(time.time() - job["started"], 1))
+            except Exception as e:
+                job.update(status="error", error=f"{type(e).__name__}: {e}"[:300])
+        threading.Thread(target=run, daemon=True).start()
+        for old in [k for k, v in self.jobs.items() if time.time() - v["started"] > 3600]:
+            self.jobs.pop(old, None)
+        return {"id": jid, **{k: job[k] for k in ("status", "lines", "words")}}
+
+
 def pick_engine(requested: str) -> str:
     if requested != "auto":
         return requested
@@ -791,6 +958,7 @@ async def main():
     threading.Thread(target=hub.sample_resources, daemon=True).start()
     writer = Writer(hub)
     updater = Updater(hub)
+    persona = PersonalityReader()
     threading.Thread(target=updater.loop, daemon=True).start()
     threading.Thread(target=transcriber, args=(q, writer, hub, language), daemon=True).start()
 
@@ -842,6 +1010,21 @@ async def main():
             hub.want = (m["id"], m["engine"], m["repo"])
             save_settings(model=m["id"])
             return respond({"ok": True, "loading": m["id"]})
+        if path == "/api/persona/info":
+            return respond(persona.info())
+        if path == "/api/persona/start":
+            if request.headers.get("X-CT") != "1":
+                return respond({"error": "forbidden"}, status=403)
+            try:
+                from urllib.parse import unquote
+                res = persona.start(params.get("day", ""), int(params.get("from", 0)), int(params.get("to", 0)),
+                                    unquote(params.get("ch", "")), unquote(params.get("user", "")), unquote(params.get("name", "")))
+            except (ValueError, OSError) as e:
+                res = {"error": str(e)}
+            return respond(res, status=400 if "error" in res else 200)
+        if path == "/api/persona":
+            job = persona.jobs.get(params.get("id", ""))
+            return respond(job or {"error": "unknown job"}, status=200 if job else 404)
         if path == "/api/update":
             return respond(updater.state)
         if path in ("/api/update/check", "/api/update/apply"):
