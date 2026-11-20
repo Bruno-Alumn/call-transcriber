@@ -107,7 +107,7 @@ async function transcribeFlow() {
   await lw.click('#join'); await sleep(9000);
   const st = await get('/api/state');
   const l1 = (st.accounts || []).find((a) => a.account === 'l1');
-  const title2 = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.getTitle()).filter((t) => /Discord —/.test(t)));
+  const title2 = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.getTitle()).filter((t) => /Discord ·/.test(t)));
   console.log('AFTER JOIN', JSON.stringify({ ch: l1?.channel?.name, capturing: l1?.capturing }), JSON.stringify(title2));
   if (l1?.channel?.name !== 'Voice 4') fail('listener did not end up in the chosen channel');
   const again = await dash.evaluate(() => window.ctApp.transcribe('900000000000000001', '700000000000000002'));

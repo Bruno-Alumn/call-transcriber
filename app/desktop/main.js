@@ -290,7 +290,7 @@ ipcMain.on('ct:hook-status', (e, s) => {
   const me = s.me;
   if (me?.id && (me.id !== a.userId || (me.name && me.name !== a.label))) {
     a.userId = me.id; a.label = me.name || a.label; saveAccounts(); hello(a); buildMenu(); broadcast();
-    if (!r.hint) winOf(a.id)?.setTitle(`Discord — ${nameOf(a)}${a.role === 'listener' ? ' (listener)' : ''}`);
+    if (!r.hint) winOf(a.id)?.setTitle(`Discord · ${nameOf(a)}${a.role === 'listener' ? ' (listener)' : ''}`);
   }
   const inCall = !!(s.pcs && s.tracks);
   if (inCall && r.hint) { r.hint = null; clearJoinHint(a); }
@@ -428,7 +428,7 @@ function openShareView(ch = '') {
     const have = shareWins.get(ch);
     if (have && !have.isDestroyed()) { have.showInactive(); resolve(have); return; }
     const w = new BrowserWindow({
-      width: 1280, height: 720, minWidth: 800, minHeight: 450, title: 'Earshot — shared view',
+      width: 1280, height: 720, minWidth: 800, minHeight: 450, title: 'Earshot shared view',
       backgroundColor: windowBg(), icon: icon(), autoHideMenuBar: true, show: false,
       webPreferences: { contextIsolation: true, sandbox: true, backgroundThrottling: false },
     });
@@ -476,8 +476,8 @@ const fromPicker = (e) => picker && !picker.isDestroyed() && e.sender === picker
 ipcMain.handle('ct:picker-sources', async (e) => {
   if (!fromPicker(e)) return null;
   const app_ = [
-    { id: 'app:share', name: 'Transcriber — compact view', note: 'A clean 1280×720 window made for sharing: live transcript and stats', placeholder: 'Compact view' },
-    { id: 'app:dash', name: 'Transcriber — dashboard', note: 'Exactly what your dashboard shows', placeholder: 'Dashboard' },
+    { id: 'app:share', name: 'Earshot compact view', note: 'A 1280×720 window for sharing, with the live transcript and stats', placeholder: 'Compact view' },
+    { id: 'app:dash', name: 'Earshot dashboard', note: 'The dashboard as you see it', placeholder: 'Dashboard' },
   ];
   // live previews of our own views
   try {
@@ -497,7 +497,7 @@ ipcMain.handle('ct:picker-sources', async (e) => {
     windows = all.filter((x) => x.id.startsWith('window:') && !own.has(x.id) && x.name).map(item);
   } catch {}
   if (IS_MAC && systemPreferences.getMediaAccessStatus('screen') !== 'granted') {
-    note = 'To share a screen or another app, allow Earshot in System Settings › Privacy & Security › Screen & System Audio Recording, then reopen it. The two Call Transcriber views work without that.';
+    note = 'To share a screen or another app, allow Earshot in System Settings › Privacy & Security › Screen & System Audio Recording, then reopen it. The two Earshot views work without that.';
   }
   return { app: app_, screens, windows, note };
 });
@@ -518,7 +518,7 @@ function createDiscord(a, { show = true, url } = {}) {
   if (winOf(a.id)) return winOf(a.id);
   const w = new BrowserWindow({
     width: 1240, height: 820, minWidth: 940, minHeight: 500, show: false,
-    title: `Discord — ${nameOf(a)}${a.role === 'listener' ? ' (listener)' : ''}`,
+    title: `Discord · ${nameOf(a)}${a.role === 'listener' ? ' (listener)' : ''}`,
     backgroundColor: '#313338', icon: icon(), autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'discord-preload.js'), contextIsolation: true, sandbox: true, nodeIntegration: false,
@@ -533,7 +533,7 @@ function createDiscord(a, { show = true, url } = {}) {
   wc.on('will-navigate', (e, u) => { if (!isDiscordUrl(u)) { e.preventDefault(); openExternal(u); } });
   wc.on('will-redirect', (e, u) => { if (!isDiscordUrl(u)) { e.preventDefault(); openExternal(u); } });
   wc.setWindowOpenHandler(({ url: u }) => { openExternal(u); return { action: 'deny' }; });
-  w.on('page-title-updated', (e) => e.preventDefault());      // keep "Discord — <account>"
+  w.on('page-title-updated', (e) => e.preventDefault());      // keep "Discord · <account>"
   if (a.role === 'listener') wc.on('did-finish-load', () => wc.insertCSS('*,*::before,*::after{animation-duration:0s!important;transition-duration:0s!important}').catch(() => {}));
   w.on('close', (e) => { if (!quitting && acct(a.id)) { e.preventDefault(); w.hide(); broadcast(); } });   // stay in the call
   w.on('closed', () => { const rr = rt.get(a.id); if (rr && rr.win === w) { rr.win = null; try { rr.ws?.close(); } catch {} } });
@@ -588,7 +588,7 @@ function setRole(id, role) {
 }
 function reloadAccount(a) {       // a role change takes effect in a fresh page (mic access is set up before Discord loads)
   const w = winOf(a.id); if (!w) return;
-  w.setTitle(`Discord — ${nameOf(a)}${a.role === 'listener' ? ' (listener)' : ''}`);
+  w.setTitle(`Discord · ${nameOf(a)}${a.role === 'listener' ? ' (listener)' : ''}`);
   w.webContents.setAudioMuted(!!a.muted);
   w.webContents.reload();
   hello(a);
@@ -622,13 +622,13 @@ const JOIN_CSS = `button[aria-label*="Join Voice" i], button[aria-label*="Join C
 async function showJoinHint(a) {
   const w = winOf(a.id); if (!w) return;
   try { R(a.id).hintCss = await w.webContents.insertCSS(JOIN_CSS); } catch {}
-  w.setTitle(`Click Join Voice to start transcribing — ${nameOf(a)}`);
+  w.setTitle(`${nameOf(a)}: click Join Voice to start transcribing`);
 }
 function clearJoinHint(a) {
   const w = winOf(a.id), r = R(a.id); if (!w) return;
   if (r.hintCss) w.webContents.removeInsertedCSS(r.hintCss).catch(() => {});
   r.hintCss = null;
-  w.setTitle(`Discord — ${nameOf(a)}${a.role === 'listener' ? ' (listener)' : ''}`);
+  w.setTitle(`Discord · ${nameOf(a)}${a.role === 'listener' ? ' (listener)' : ''}`);
 }
 
 function openExternal(url) {
@@ -700,7 +700,7 @@ function buildMenu() {
   t.push({ label: 'View', submenu: [
     { label: 'Reload Dashboard', accelerator: 'CmdOrCtrl+R', click: () => (server ? showDashboard() : splash('The server is stopped. Nothing is being transcribed.', { offerStart: true })) },
     { label: 'Show/Hide Calls List', accelerator: 'CmdOrCtrl+\\', click: js("document.getElementById('toggle-side')?.click()") },
-    { label: 'Compact Mode (everything on one screen)', accelerator: 'CmdOrCtrl+Shift+K', click: js("document.getElementById('toggle-compact')?.click()") },
+    { label: 'Compact View (everything on one screen)', accelerator: 'CmdOrCtrl+Shift+K', click: js("document.getElementById('toggle-compact')?.click()") },
     { label: 'Search All Calls…', accelerator: 'CmdOrCtrl+Shift+F', click: js("(()=>{const s=document.getElementById('shell');s?.classList.remove('collapsed');document.getElementById('hq')?.focus()})()") },
     { label: 'Find in Transcript…', accelerator: 'CmdOrCtrl+F', click: js("document.getElementById('q')?.focus()") },
     { type: 'separator' },
@@ -719,7 +719,7 @@ function updateTray() {
   if (!tray) return;
   const calls = accounts.filter((a) => accountSummary(a).inCall).length;
   const state = !server ? 'server stopped' : paused ? 'paused' : calls ? `${calls} call${calls > 1 ? 's' : ''}` : 'ready';
-  tray.setToolTip(`Earshot — ${state}`);
+  tray.setToolTip(`Earshot: ${state}`);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Open Earshot', click: showMain },
     { label: 'Open Discord', click: () => showDiscord() },

@@ -140,6 +140,8 @@ body {
 .app > * { flex: none; }
 .app > #layout { flex: 1 1 0; min-height: 0; }
 .where { color: var(--text-secondary); font-size: 13px; display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1 1 auto; overflow: hidden; }
+.where b { flex: 0 1 auto; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.where span { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .where svg { width: 15px; height: 15px; flex: none; color: var(--text-muted); }
 .where span { white-space: nowrap; }
 .where b { color: var(--text-primary); font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -453,6 +455,8 @@ body.compact .kpi .value { font-size: 16px; }
 #p-mute { border-color: var(--border); background: var(--surface-1); }
 #p-mute.on { background: var(--surface-1); border-color: var(--bad); color: var(--bad); }
 .iconbtn { border-radius: var(--radius); height: 30px; }
+header .iconbtn { white-space: nowrap; flex: none; }
+@media (max-width: 1280px) { header .iconbtn .bl { display: none; } }
 select, input[type=search] { border-radius: var(--radius); }
 /* transcript: monospaced timestamps, quieter hover */
 .line { border-radius: 4px; }
@@ -510,10 +514,10 @@ select, input[type=search] { border-radius: var(--radius); }
 </aside>
 <div class="app">
   <header>
-    <button class="iconbtn" id="toggle-side" title="Show/hide calls (⌘\\)" aria-label="Show or hide the calls list">☰</button>
-    <button class="iconbtn" id="open-settings" title="Settings (⌘, / Ctrl+,)" aria-label="Settings"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M6.9 1.5h2.2l.35 1.7c.4.15.77.36 1.1.62l1.65-.55 1.1 1.9-1.3 1.15a4.6 4.6 0 0 1 0 1.26l1.3 1.15-1.1 1.9-1.65-.55c-.33.26-.7.47-1.1.62l-.35 1.7H6.9l-.35-1.7a4.4 4.4 0 0 1-1.1-.62l-1.65.55-1.1-1.9 1.3-1.15a4.6 4.6 0 0 1 0-1.26L2.7 5.17l1.1-1.9 1.65.55c.33-.26.7-.47 1.1-.62L6.9 1.5ZM8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z"/></svg></button>
-    <button class="iconbtn" id="customize" title="Customize layout: move, resize and hide panels" aria-label="Customize layout"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M2 3.25C2 2.56 2.56 2 3.25 2h3.5C7.44 2 8 2.56 8 3.25v1.5C8 5.44 7.44 6 6.75 6h-3.5C2.56 6 2 5.44 2 4.75v-1.5ZM2 9.25C2 8.56 2.56 8 3.25 8h3.5C7.44 8 8 8.56 8 9.25v3.5c0 .69-.56 1.25-1.25 1.25h-3.5C2.56 14 2 13.44 2 12.75v-3.5ZM10 3.25c0-.69.56-1.25 1.25-1.25h1.5c.69 0 1.25.56 1.25 1.25v9.5c0 .69-.56 1.25-1.25 1.25h-1.5c-.69 0-1.25-.56-1.25-1.25v-9.5Z"/></svg></button>
-    <button class="iconbtn" id="toggle-compact" title="Compact mode: everything on one screen (⌘⇧K / Ctrl+Shift+K)" aria-label="Compact mode" aria-pressed="false"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M2 2.75C2 2.34 2.34 2 2.75 2h4.5c.41 0 .75.34.75.75v10.5c0 .41-.34.75-.75.75h-4.5A.75.75 0 0 1 2 13.25V2.75Zm7 0c0-.41.34-.75.75-.75h3.5c.41 0 .75.34.75.75v3.5c0 .41-.34.75-.75.75h-3.5A.75.75 0 0 1 9 6.25v-3.5Zm0 6.5c0-.41.34-.75.75-.75h3.5c.41 0 .75.34.75.75v4c0 .41-.34.75-.75.75h-3.5a.75.75 0 0 1-.75-.75v-4Z"/></svg></button>
+    <button class="iconbtn" id="toggle-side" title="Show or hide the list of calls (⌘\ / Ctrl+\)" aria-label="Show or hide the list of calls"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.4" d="M2.5 3.2h11v9.6h-11zM6 3.2v9.6"/></svg><span class="bl">Calls</span></button>
+    <button class="iconbtn" id="open-settings" title="Settings (⌘, / Ctrl+,)" aria-label="Settings"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M6.9 1.5h2.2l.35 1.7c.4.15.77.36 1.1.62l1.65-.55 1.1 1.9-1.3 1.15a4.6 4.6 0 0 1 0 1.26l1.3 1.15-1.1 1.9-1.65-.55c-.33.26-.7.47-1.1.62l-.35 1.7H6.9l-.35-1.7a4.4 4.4 0 0 1-1.1-.62l-1.65.55-1.1-1.9 1.3-1.15a4.6 4.6 0 0 1 0-1.26L2.7 5.17l1.1-1.9 1.65.55c.33-.26.7-.47 1.1-.62L6.9 1.5ZM8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z"/></svg><span class="bl">Settings</span></button>
+    <button class="iconbtn" id="customize" title="Move, resize and hide panels" aria-label="Edit the layout"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M2 3.25C2 2.56 2.56 2 3.25 2h3.5C7.44 2 8 2.56 8 3.25v1.5C8 5.44 7.44 6 6.75 6h-3.5C2.56 6 2 5.44 2 4.75v-1.5ZM2 9.25C2 8.56 2.56 8 3.25 8h3.5C7.44 8 8 8.56 8 9.25v3.5c0 .69-.56 1.25-1.25 1.25h-3.5C2.56 14 2 13.44 2 12.75v-3.5ZM10 3.25c0-.69.56-1.25 1.25-1.25h1.5c.69 0 1.25.56 1.25 1.25v9.5c0 .69-.56 1.25-1.25 1.25h-1.5c-.69 0-1.25-.56-1.25-1.25v-9.5Z"/></svg><span class="bl">Layout</span></button>
+    <button class="iconbtn" id="toggle-compact" title="Fit every panel and the live transcript on one screen (⌘⇧K / Ctrl+Shift+K)" aria-label="Compact view" aria-pressed="false"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" d="M6.5 2.5v4h-4M9.5 2.5v4h4M6.5 13.5v-4h-4M9.5 13.5v-4h4"/></svg><span class="bl" id="compact-l">Compact</span></button>
     <div class="brand" style="display:none">
       <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="var(--text-primary)"/>
         <g stroke="var(--bg)" stroke-width="2.4" stroke-linecap="round"><line x1="9" y1="13" x2="9" y2="19"/><line x1="13.5" y1="9" x2="13.5" y2="23"/><line x1="18" y1="12" x2="18" y2="20"/><line x1="22.5" y1="14.5" x2="22.5" y2="17.5"/></g></svg>
@@ -554,7 +558,7 @@ select, input[type=search] { border-radius: var(--radius); }
         <div class="pers" id="pers"></div>
       </div>
       <div class="card c-res" data-panel="resources" data-title="Resources">
-        <div class="head"><h2>Resources</h2><span class="meta" id="res-meta">updated every 2 s</span><button class="iconbtn res-pick" id="res-pick" title="Choose what to show" aria-label="Choose metrics">Metrics</button></div>
+        <div class="head"><h2>Resources</h2><span class="meta" id="res-meta">updated every 2 s</span><button class="iconbtn res-pick" id="res-pick" title="Choose which numbers to show here" aria-label="Choose metrics">Choose metrics</button></div>
         <div class="body"><div class="res" id="res"></div></div>
       </div>
       <div class="card c-talk" data-panel="talk" data-title="Talk time">
@@ -566,7 +570,7 @@ select, input[type=search] { border-radius: var(--radius); }
           <div class="seg" id="act-range" style="margin-left:auto"><button data-r="60" class="on">Last hour</button><button data-r="0">Whole call</button></div>
         </div>
         <div class="legend" id="act-legend"></div>
-        <div class="body" style="padding-top:0"><svg id="act" width="100%" height="150" role="img" aria-label="Talk time per time bucket, stacked by speaker"></svg></div>
+        <div class="body" style="padding-top:0"><svg id="act" width="100%" height="150" role="img" aria-label="Talk time in each slice of time, by speaker"></svg></div>
       </div>
       <div class="card c-tl" data-panel="timeline" data-title="Timeline">
         <div class="head"><h2>Timeline</h2><span class="meta">last 10 minutes · drag to zoom, scroll to move</span></div>
@@ -802,7 +806,7 @@ function stats() {
 function renderKPIs(s) {
   const span = lines.length ? (lines[lines.length - 1].end - lines[0].t) / 1000 : 0;
   $('#k-talk').textContent = lines.length ? fmtDur(s.talk) : '–';
-  $('#k-talk-s').textContent = lines.length ? `over ${fmtDur(span)} · ${fmtHM(lines[0].t)}–${fmtHM(lines[lines.length - 1].end)}` : 'nothing yet';
+  $('#k-talk-s').textContent = lines.length ? `over ${fmtDur(span)} · ${fmtHM(lines[0].t)} to ${fmtHM(lines[lines.length - 1].end)}` : 'nothing yet';
   $('#k-words').textContent = s.words.toLocaleString();
   $('#k-words-s').textContent = s.talk > 30 ? Math.round(s.words / (s.talk / 60)) + ' words per minute spoken' : ' ';
   $('#k-people').textContent = s.per.length;
@@ -879,7 +883,7 @@ function renderActivity(s) {
   zoomLabel('act');
   svg.querySelectorAll('.hit').forEach((el) => {
     el.onmousemove = (e) => { const i = +el.dataset.i, b = buckets[i]; const rows = keys.filter((k) => b.get(k)).sort((a, c) => b.get(c) - b.get(a)).map((k) => `<div><span class="swatch" style="background:${colorFor(k)}"></span> ${esc(nameFor(k))} — ${fmtDur(b.get(k))}</div>`).join('');
-      showTip(e, `<div class="t">${fmtHM(b0 + i * bms)}–${fmtHM(b0 + (i + 1) * bms)}</div>${rows || '<div>Quiet</div>'}`); };
+      showTip(e, `<div class="t">${fmtHM(b0 + i * bms)} to ${fmtHM(b0 + (i + 1) * bms)}</div>${rows || '<div>Quiet</div>'}`); };
     el.onmouseleave = hideTip;
   });
   $('#act-legend').innerHTML = keys
@@ -1081,7 +1085,7 @@ function extSummary(st) {
 function renderState() {
   const st = liveState;
   const set = (id, cls, text) => { const el = $(id); el.className = 'pill ' + cls; el.lastElementChild.textContent = text; };
-  if (!st) { set('#p-server', 'bad', 'Server stopped'); set('#p-ext', '', 'Discord —'); set('#p-model', '', 'Model —'); $('#livedot').style.visibility = 'hidden'; renderResources(); refreshPop(); return; }
+  if (!st) { set('#p-server', 'bad', 'Server stopped'); set('#p-ext', '', 'Discord'); set('#p-model', '', 'Model'); $('#livedot').style.visibility = 'hidden'; renderResources(); refreshPop(); return; }
   set('#p-server', 'ok', 'Server running · ' + fmtDur(st.uptime));
   const [ec, et] = extSummary(st); set('#p-ext', ec, et);
   const nice = modelsInfo?.models?.find((m) => m.id === (st.modelLoading || st.modelId))?.name || st.model.split('/').pop().replace(/-mlx$/, '');
@@ -1264,7 +1268,7 @@ function popHtml(which) {
       <div class="hint" style="margin-top:0">${status}</div>
       ${st.modelError ? `<div class="hint" style="color:var(--bad)">${esc(st.modelError)}</div>` : ''}
       <div class="models">${rows || '<div class="hint">Loading list…</div>'}</div>
-      <div class="hint">Turn on both to have 2B rewrite every line with its better accuracy, a few seconds after 470M writes it. 2B needs about 9 GB of memory. The first use of a model downloads it. Nothing leaves your computer.</div>`;
+      <div class="hint">Turn on both and 2B rewrites each line a few seconds after 470M writes it, which is more accurate. 2B needs about 9 GB of memory. The first use of a model downloads it. Nothing leaves your computer.</div>`;
   }
 }
 function openPop(which, anchor) {
@@ -1390,7 +1394,7 @@ function render(fmt, sections, title) {
   if (fmt === 'md') out.push(`# ${title}`, '');
   for (const { call: c, lines: ls } of sections) {
     const people = [...new Set(ls.map(speakerOf))];
-    const head = `${chTitle(c)}${c.guildName ? ' · ' + c.guildName : ''} — ${dayLabel(c.day)} ${fmtHM(c.start)}–${fmtHM(c.end)} (${fmtDur((c.end - c.start) / 1000)})`;
+    const head = `${chTitle(c)}${c.guildName ? ' · ' + c.guildName : ''} · ${dayLabel(c.day)} ${fmtHM(c.start)} to ${fmtHM(c.end)} (${fmtDur((c.end - c.start) / 1000)})`;
     if (fmt === 'md') {
       out.push(sections.length > 1 ? `## ${head}` : `_${head}_`, '', `**People:** ${people.join(', ')}`, '');
       for (const r of ls) out.push(`**[${hms(r.t)}] ${speakerOf(r)}:** ${r.text}`, '');
@@ -1486,7 +1490,7 @@ function tree(list, cur, prefix) {
         const ppl = [...new Set(c.people.map(bySuffix))];
         html += `<button class="call${c === cur ? ' on' : ''}" data-id="${esc(c.id)}" data-kind="call" data-key="${esc(c.id)}" data-label="${esc(ch.name + ' · ' + dayLabel(c.day) + ' ' + fmtHM(c.start))}" data-arch="${esc(c.archived || '')}">
           <div class="t1"><span class="ch">${dayLabel(c.day)}</span>${lv ? '<span class="badge">LIVE</span>' : ''}</div>
-          <div class="t2">${fmtHM(c.start)} – ${lv ? 'now' : fmtHM(c.end)} · ${fmtDur((c.end - c.start) / 1000)}</div>
+          <div class="t2">${fmtHM(c.start)} to ${lv ? 'now' : fmtHM(c.end)} · ${fmtDur((c.end - c.start) / 1000)}</div>
           <div class="t3"><span class="faces">${ppl.slice(0, 4).map((p) => `<span title="${esc(p)}">${esc(initialsOf(p))}</span>`).join('')}</span>${ppl.length} ${ppl.length === 1 ? 'person' : 'people'} · ${c.words.toLocaleString()} words</div>
         </button>`;
       }
@@ -1552,7 +1556,7 @@ $('#calls').addEventListener('contextmenu', (e) => {
       const n = await api(`/api/delete?kind=${kind}&key=${encodeURIComponent(key)}&dry=1`);
       const ok = await confirmBox(`Delete ${what} “${label}”?`,
         `This removes ${n.calls} ${n.calls === 1 ? 'call' : 'calls'} (${n.lines.toLocaleString()} lines) from your transcripts and stats.`,
-        'The removed lines are moved to the transcripts/.trash folder, so they can still be recovered by hand.', 'Delete');
+        'Removed lines go to the transcripts/.trash folder, so you can still get them back by hand.', 'Delete');
       if (!ok) return;
       await api(`/api/delete?kind=${kind}&key=${encodeURIComponent(key)}`);
       dayCache.clear();
@@ -2133,7 +2137,7 @@ function renderAll() { rebuildKeys(); const s = stats(); renderKPIs(s); renderBa
 let qTimer; $('#q').oninput = () => { clearTimeout(qTimer); qTimer = setTimeout(() => { query = $('#q').value.trim(); renderFeed(); }, 120); };
 $('#copy').onclick = async () => {
   const c = currentCall(); if (!c) return;
-  const head = `${chTitle(c)}${c.guildName ? ' · ' + c.guildName : ''} — ${dayLabel(c.day)} ${fmtHM(c.start)}–${fmtHM(c.end)}\n\n`;
+  const head = `${chTitle(c)}${c.guildName ? ' · ' + c.guildName : ''} · ${dayLabel(c.day)} ${fmtHM(c.start)} to ${fmtHM(c.end)}\n\n`;
   const body = lines.filter(own).map((r) => `[${fmtTime(r.t)}] ${nameFor(keyOf.get(r))}: ${r.text}`).join('\n');
   try { await navigator.clipboard.writeText(head + body); } catch { const ta = document.createElement('textarea'); ta.value = head + body; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
   $('#copy').textContent = 'Copied'; setTimeout(() => ($('#copy').textContent = 'Copy'), 1500);
@@ -2146,6 +2150,8 @@ function setCompact(on, persist = true) {
   compact = !!on;
   document.body.classList.toggle('compact', compact);
   $('#toggle-compact').setAttribute('aria-pressed', String(compact));
+  $('#compact-l').textContent = compact ? 'Full view' : 'Compact';
+  $('#toggle-compact').title = compact ? 'Back to the full dashboard (⌘⇧K / Ctrl+Shift+K)' : 'Fit every panel and the live transcript on one screen (⌘⇧K / Ctrl+Shift+K)';
   if (persist && !SHARE) try { localStorage.setItem('ct-compact', compact ? '1' : '0'); } catch {}
   requestAnimationFrame(() => { const s = stats(); renderActivity(s); renderTimeline(s); });
   applyLayout();
