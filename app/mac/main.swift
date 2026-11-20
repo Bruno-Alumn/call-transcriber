@@ -184,7 +184,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         case "start": startServer()
         case "stop": stopServer()
         case "restart": restartServer()
+        case "relaunch": relaunchAfterUpdate(rebuild: body["rebuild"] as? Bool ?? false, deps: body["deps"] as? Bool ?? false)
+        case "save": save(name: body["name"] as? String ?? "transcript.txt", content: body["content"] as? String ?? "")
         default: break
+        }
+    }
+
+    // MARK: export + update
+
+    /// Native Save dialog for transcript exports (WKWebView can't do blob downloads).
+    func save(name: String, content: String) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = name
+        panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        panel.canCreateDirectories = true
+        panel.beginSheetModal(for: window) { response in
+            guard response == .OK, let url = panel.url else { return }
+            do { try content.write(to: url, atomically: true, encoding: .utf8) }
+            catch { NSAlert(error: error).runModal() }
+        }
+    }
+
+    /// After the server pulled a new release: stop it, refresh dependencies,
+    /// rebuild this app if its code changed, then reopen.
+    func relaunchAfterUpdate(rebuild: Bool, deps: Bool) {
+        stoppedByUser = true
+        showSplash("Installing the update…")
+        let pid = server?.processIdentifier
+        DispatchQueue.global().async {
+            if let pid = pid { self.kill([pid]) }
+            let zsh = { (cmd: String) -> Int32 in
+                let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/zsh"); p.arguments = ["-lc", cmd]
+                p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
+                try? p.run(); p.waitUntilExit(); return p.terminationStatus
+            }
+            if deps { _ = zsh("cd \"\(serverDir.path)\" && uv sync") }
+            var ok = true
+            if rebuild { ok = zsh("\"\(project.path)/app/mac/build.sh\"") == 0 }
+            DispatchQueue.main.async {
+                if !ok { self.showSplash("The app rebuild failed. Run app/mac/build.sh in a terminal to see why.", error: true, offerStart: true); return }
+                // Reopen (the freshly built copy in ~/Applications, or this one).
+                let target = rebuild ? home.appendingPathComponent("Applications/Call Transcriber.app").path : Bundle.main.bundlePath
+                let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/sh")
+                p.arguments = ["-c", "sleep 1; open -n \"\(target)\""]
+                try? p.run()
+                self.server = nil
+                NSApp.terminate(nil)
+            }
         }
     }
 

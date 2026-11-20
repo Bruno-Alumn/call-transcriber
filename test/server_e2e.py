@@ -48,6 +48,7 @@ async def feed():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--engine", default="onnx")
+    ap.add_argument("--switch-to", default=None, help="model id to switch to (live) before feeding audio")
     args = ap.parse_args()
     out = Path(tempfile.mkdtemp()) / "transcripts"
     env = dict(os.environ, PYTHONUTF8="1")
@@ -63,6 +64,17 @@ def main():
             time.sleep(1)
         else:
             sys.exit("server never became ready")
+        if args.switch_to:
+            req = urllib.request.Request(f"http://127.0.0.1:{PORT}/api/models/select?id={args.switch_to}", headers={"X-CT": "1"})
+            print("switch:", json.load(urllib.request.urlopen(req, timeout=10)))
+            for _ in range(900):
+                st = get("/api/state")
+                if st["modelReady"] and st["modelId"] == args.switch_to:
+                    break
+                time.sleep(1)
+            else:
+                sys.exit("model switch never finished")
+            print("now running:", st["modelId"], st["engine"], st["model"])
         asyncio.run(feed())
         deadline = time.time() + 120
         lines = []

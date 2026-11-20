@@ -307,6 +307,97 @@ def all_days() -> list[str]:
     return sorted({f.stem for f in TRANSCRIPTS.glob("*.md")} | {f.stem for f in TRANSCRIPTS.glob("*.jsonl")}, reverse=True)
 
 
+# ---------------------------------------------------------------- updates
+# Updates come from GitHub release tags (vX.Y.Z) via git, which is already
+# signed in on each machine (the repo is private: no tokens in the app).
+def git(*args, timeout=60):
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
+    try:
+        r = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout, env=env)
+        return r.returncode, (r.stdout + r.stderr).strip()
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 1, str(e)
+
+
+def vtuple(v: str) -> tuple:
+    return tuple(int(x) for x in re.findall(r"\d+", v or "")[:3]) or (0,)
+
+
+class Updater:
+    def __init__(self, hub: "Hub"):
+        self.hub = hub
+        self.lock = threading.Lock()
+        self.state = {"current": self.current(), "latest": None, "available": False, "notes": "",
+                      "checked": None, "error": None, "busy": False, "applied": None}
+
+    @staticmethod
+    def current() -> str:
+        try:
+            return (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+        except OSError:
+            return "0.0.0"
+
+    def check(self) -> dict:
+        st = self.state
+        st["current"] = self.current()
+        if not (ROOT / ".git").exists():
+            st.update(error="This copy isn't a git checkout, so it can't update itself. Install with git clone to get updates.")
+            return st
+        rc, out = git("fetch", "--tags", "--force", "--quiet", "origin", timeout=90)
+        if rc != 0:
+            st.update(error="Couldn't reach GitHub: " + out[-200:], checked=time.time())
+            return st
+        rc, out = git("tag", "-l", "v*", "--sort=-v:refname")
+        latest = next((t for t in out.splitlines() if re.fullmatch(r"v\d+\.\d+\.\d+", t.strip())), None)
+        notes = git("tag", "-l", "--format=%(contents)", latest)[1] if latest else ""
+        st.update(latest=latest, notes=notes.strip()[:4000], checked=time.time(), error=None,
+                  available=bool(latest) and vtuple(latest) > vtuple(st["current"]))
+        return st
+
+    def apply(self) -> dict:
+        with self.lock:
+            st = self.check()
+            if st.get("error"):
+                return {"ok": False, "error": st["error"]}
+            if not st["available"]:
+                return {"ok": False, "error": "Already up to date."}
+            st["busy"] = True
+            try:
+                tag = st["latest"]
+                rc, dirty = git("status", "--porcelain", "--untracked-files=no")
+                if dirty:
+                    return {"ok": False, "error": "This copy has local code changes; not touching them. (git status shows them.)"}
+                rc, branch = git("rev-parse", "--abbrev-ref", "HEAD")
+                if branch.strip() != "main":
+                    return {"ok": False, "error": f"On branch {branch.strip()!r}, expected main."}
+                rc, changed = git("diff", "--name-only", "HEAD", tag)
+                files = [f for f in changed.splitlines() if f.strip()]
+                rc, out = git("merge", "--ff-only", "--quiet", tag)
+                if rc != 0:
+                    return {"ok": False, "error": "Couldn't fast-forward to " + tag + ": " + out[-200:]}
+                result = {"ok": True, "from": st["current"], "version": self.current(), "files": len(files),
+                          "rebuildMac": any(f.startswith("app/mac/") for f in files),
+                          "deps": any(f in ("server/pyproject.toml", "server/uv.lock") for f in files),
+                          "extension": any(f.startswith("extension/") for f in files),
+                          "server": any(f.startswith("server/") for f in files)}
+                st.update(applied=result, available=False, current=self.current())
+                if result["extension"]:
+                    self.hub.tell_extensions({"type": "reload"})     # it reloads itself from disk
+                return result
+            finally:
+                st["busy"] = False
+
+    def loop(self):
+        time.sleep(20)
+        while True:
+            try:
+                self.check()
+            except Exception as e:
+                self.state["error"] = str(e)[:200]
+            time.sleep(6 * 3600)
+
+
 class Hub:
     """Live state for the dashboard: who's connected, who's talking, new lines."""
 
@@ -315,6 +406,7 @@ class Hub:
         self.loop: asyncio.AbstractEventLoop | None = None
         self.clients: set = set()
         self.extensions = 0
+        self.ext_sockets: set = set()
         self.ext_status: dict = {}
         self.ext_status_at = 0.0
         self.res: dict = {}
@@ -353,6 +445,8 @@ class Hub:
                "channel": st.get("channel") if age < 15 else None,
                "lastReport": int(self.ext_status_at * 1000) if self.ext_status_at else None}
         return {"type": "state", "model": self.model, "engine": getattr(self, "engine", None), "modelReady": self.model_ready,
+                "modelId": getattr(self, "model_id", None), "modelLoading": getattr(self, "loading", None),
+                "modelError": getattr(self, "model_error", None),
                 "extensions": self.extensions, "ext": ext, "people": ppl, "queue": self.queue.qsize() if self.queue else 0,
                 "uptime": int(now - self.started), "now": int(now * 1000), "pid": os.getpid(),
                 "res": {**self.res, "speed": round(self.audio_s / self.proc_s, 1) if self.proc_s else None,
@@ -383,6 +477,17 @@ class Hub:
             self.res = {"cpu": round(pct, 1), "rssMB": round(rss) if rss else None, "modelMB": round(mlx) if mlx else None,
                         "cores": os.cpu_count()}
 
+    def tell_extensions(self, msg: dict):   # safe to call from any thread
+        data = json.dumps(msg)
+        async def send():
+            for w in list(self.ext_sockets):
+                try:
+                    await w.send(data)
+                except Exception:
+                    pass
+        if self.loop:
+            self.loop.call_soon_threadsafe(lambda: asyncio.ensure_future(send()))
+
     def publish(self, msg: dict):           # safe to call from any thread
         if self.loop:
             self.loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._send(msg)))
@@ -409,6 +514,83 @@ ENGINE_DEFAULTS = {
 }
 
 
+# Models the picker offers. "repos" maps engine -> model id for that runtime;
+# "bench" holds our measured results on real meeting speech (AMI, 120 clips):
+# word error rate % and speed (x real time) on the machines we tested.
+MODELS = [
+    {"id": "granite-470m", "name": "Granite Speech 5.0 · 470M", "default": True,
+     "about": "Best all-rounder: most accurate per watt, very fast, light.", "langs": "English + 6 more",
+     "repos": {"mlx": "ibm-granite/granite-speech-5.0-470m-turboctc", "torch": "ibm-granite/granite-speech-5.0-470m-turboctc"},
+     "bench": {"mlx": {"wer": 5.5, "speed": 249, "mem": 1.6}, "torch": {"wer": 5.5, "speed": 82, "mem": 0.9}}},
+    {"id": "granite-2b", "name": "Granite Speech 5.0 · 2B",
+     "about": "Most accurate we measured, ~4x more memory and much slower.", "langs": "English + 6 more",
+     "repos": {"mlx": "ibm-granite/granite-speech-5.0-2b", "torch": "ibm-granite/granite-speech-5.0-2b"},
+     "bench": {"mlx": {"wer": 5.4, "speed": 13, "mem": 9.1}, "torch": {"wer": 5.4, "speed": 11}}},
+    {"id": "parakeet-v3", "name": "Parakeet TDT 0.6B v3",
+     "about": "Very fast, 25 European languages, auto-detects language.", "langs": "25 European",
+     "repos": {"mlx": "mlx-community/parakeet-tdt-0.6b-v3", "onnx": "nemo-parakeet-tdt-0.6b-v3"},
+     "bench": {"mlx": {"wer": 7.0, "speed": 116, "mem": 3.5}, "onnx": {"wer": 7.4, "speed": 30, "mem": 2.0}}},
+    {"id": "qwen3-1.7b", "name": "Qwen3-ASR · 1.7B",
+     "about": "52 languages incl. Chinese, Japanese, Korean, Arabic.", "langs": "52 languages",
+     "repos": {"mlx": "mlx-community/Qwen3-ASR-1.7B-8bit", "torch": "Qwen/Qwen3-ASR-1.7B-hf"},
+     "bench": {"mlx": {"wer": 8.5, "speed": 18, "mem": 5.5}, "torch": {"wer": 8.5, "speed": 10}}},
+    {"id": "whisper-turbo", "name": "Whisper large-v3-turbo",
+     "about": "OpenAI's model: 99 languages; least accurate on fast chatter.", "langs": "99 languages",
+     "repos": {"mlx": "mlx-community/whisper-large-v3-turbo", "torch": "openai/whisper-large-v3-turbo"},
+     "bench": {"mlx": {"wer": 13.0, "speed": 15, "mem": 2.5}, "torch": {"wer": 13.0, "speed": 30}}},
+]
+
+
+def engines_here() -> list[str]:
+    """Speech runtimes this machine can use, best first."""
+    out = []
+    import platform
+    if sys.platform == "darwin" and platform.machine() == "arm64":
+        try:
+            import mlx_audio  # noqa: F401
+            out.append("mlx")
+        except Exception:
+            pass
+    try:
+        import torch
+        if torch.cuda.is_available():
+            out.append("torch")
+    except Exception:
+        pass
+    try:
+        import onnx_asr  # noqa: F401
+        out.append("onnx")
+    except Exception:
+        pass
+    return out
+
+
+def models_here() -> list[dict]:
+    have = engines_here()
+    out = []
+    for m in MODELS:
+        eng = next((e for e in have if e in m["repos"]), None)
+        out.append({**{k: v for k, v in m.items() if k != "repos"}, "engine": eng, "repo": m["repos"].get(eng) if eng else None,
+                    "available": bool(eng), "stats": m.get("bench", {}).get(eng) if eng else None})
+    return out
+
+
+def settings_path() -> Path:
+    return TRANSCRIPTS.parent / "settings.json"
+
+
+def load_settings() -> dict:
+    try:
+        return json.loads(settings_path().read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_settings(**kw):
+    st = load_settings(); st.update(kw)
+    settings_path().write_text(json.dumps(st, indent=1), encoding="utf-8")
+
+
 def pick_engine(requested: str) -> str:
     if requested != "auto":
         return requested
@@ -426,6 +608,10 @@ def pick_engine(requested: str) -> str:
 
 def load_engine(engine: str, repo: str, language: str | None):
     """Returns run(audio float32 16 kHz) -> text."""
+    if engine == "mlx" and "whisper" in repo.lower():      # Whisper: its own MLX package
+        import mlx_whisper
+        kw = {"language": language} if language else {}
+        return lambda audio: mlx_whisper.transcribe(audio, path_or_hf_repo=repo, condition_on_previous_text=False, **kw)["text"]
     if engine == "mlx":
         import mlx.core as mx
         from mlx_audio.stt import load
@@ -437,16 +623,48 @@ def load_engine(engine: str, repo: str, language: str | None):
         return run
     if engine == "torch":
         import torch
-        from transformers import AutoModelForCTC, AutoProcessor
+        from transformers import AutoProcessor
         dev = "cuda" if torch.cuda.is_available() else "cpu"
+        half = torch.float16 if dev == "cuda" else torch.float32
+        low = repo.lower()
         proc = AutoProcessor.from_pretrained(repo)
-        model = AutoModelForCTC.from_pretrained(repo, dtype=torch.float16 if dev == "cuda" else torch.float32).to(dev).eval()
-        def run(audio):
-            with torch.inference_mode():
-                inp = proc([audio], sampling_rate=SR)
-                inp = {k: (v.to(dev, dtype=model.dtype) if v.is_floating_point() else v.to(dev)) if hasattr(v, "to") else v for k, v in inp.items()}
-                return proc.batch_decode(model.generate(**inp), skip_special_tokens=True)[0]
-        return run
+        def to_dev(inp, dtype):
+            return {k: (v.to(dev, dtype=dtype) if v.is_floating_point() else v.to(dev)) if hasattr(v, "to") else v for k, v in inp.items()}
+        if "turboctc" in low:                                # Granite 470M (CTC)
+            from transformers import AutoModelForCTC
+            model = AutoModelForCTC.from_pretrained(repo, dtype=half).to(dev).eval()
+            def run(audio):
+                with torch.inference_mode():
+                    inp = to_dev(proc([audio], sampling_rate=SR), model.dtype)
+                    return proc.batch_decode(model.generate(**inp), skip_special_tokens=True)[0]
+            return run
+        if "granite-speech" in low:                          # Granite 2B (speech LLM)
+            from transformers import AutoModelForSpeechSeq2Seq
+            model = AutoModelForSpeechSeq2Seq.from_pretrained(repo, dtype=torch.bfloat16 if dev == "cuda" else torch.float32).to(dev).eval()
+            tok = proc.tokenizer
+            prompt = tok.apply_chat_template([{"role": "user", "content": "<|audio|>transcribe the speech with proper punctuation and capitalization."}],
+                                             tokenize=False, add_generation_prompt=True)
+            def run(audio):
+                with torch.inference_mode():
+                    inp = proc(prompt, torch.from_numpy(audio).unsqueeze(0), device=dev, return_tensors="pt").to(dev)
+                    out = model.generate(**inp, max_new_tokens=200, do_sample=False, num_beams=1)
+                    return tok.batch_decode(out[:, inp["input_ids"].shape[-1]:], skip_special_tokens=True)[0]
+            return run
+        if "qwen3-asr" in low:                               # Qwen3-ASR (52 languages)
+            from transformers import AutoModelForMultimodalLM
+            model = AutoModelForMultimodalLM.from_pretrained(repo, dtype=half).to(dev).eval()
+            def run(audio):
+                with torch.inference_mode():
+                    inp = proc.apply_transcription_request(audio=audio, sampling_rate=SR).to(model.device, model.dtype)
+                    out = model.generate(**inp, max_new_tokens=256)
+                    return proc.decode(out[:, inp["input_ids"].shape[1]:], return_format="transcription_only")[0]
+            return run
+        if "whisper" in low:                                 # Whisper
+            from transformers import pipeline
+            pipe = pipeline("automatic-speech-recognition", model=repo, dtype=half, device=dev)
+            kw = {"language": language} if language else {}
+            return lambda audio: pipe({"raw": audio, "sampling_rate": SR}, generate_kwargs=kw)["text"]
+        raise SystemExit(f"No torch loader for {repo}")
     if engine == "onnx":
         import onnx_asr
         model = onnx_asr.load_model(repo, quantization="int8")
@@ -454,21 +672,49 @@ def load_engine(engine: str, repo: str, language: str | None):
     raise SystemExit(f"Unknown engine {engine!r} (use mlx, torch, onnx or auto)")
 
 
-def transcriber(q: queue.Queue, writer: Writer, hub: Hub, engine: str, repo: str, language: str | None):
-    print(f"Loading {repo} on {engine} (first run downloads it)…", flush=True)
-    model_run = load_engine(engine, repo, language)
-
-    def run(audio: np.ndarray) -> str:
-        return (model_run(audio) or "").strip()
-
-    run(np.zeros(SR, dtype=np.float32))
-    hub.model_ready = True
-    print("Model ready.", flush=True)
+def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None):
+    """Transcribes queued utterances. Switches models live when hub.want changes
+    (utterances wait in the queue while the new model loads)."""
+    import gc
+    current, model_run = None, None
     while True:
-        t0, audio, who, uid, ch = q.get()
+        want = hub.want                                   # (id, engine, repo)
+        if want != current:
+            mid, engine, repo = want
+            hub.model_ready, hub.loading = False, mid
+            print(f"Loading {repo} on {engine} (first run downloads it)…", flush=True)
+            try:
+                new_run = load_engine(engine, repo, language)
+                new_run(np.zeros(SR, dtype=np.float32))  # warm up
+            except Exception as e:
+                print("model load failed:", e, flush=True)
+                hub.model_error = f"{mid}: {str(e)[:200]}"
+                if current is None:
+                    raise
+                hub.want = current                        # fall back to the previous model
+                hub.model_ready, hub.loading = True, None
+                continue
+            model_run = new_run
+            current = want
+            hub.model_id, hub.engine, hub.model = mid, engine, repo
+            hub.model_ready, hub.loading, hub.model_error = True, None, None
+            hub.audio_s = hub.proc_s = 0.0; hub.latency.clear()
+            gc.collect()
+            try:
+                if engine == "mlx":
+                    sys.modules["mlx.core"].clear_cache()
+                elif engine == "torch":
+                    sys.modules["torch"].cuda.empty_cache()
+            except Exception:
+                pass
+            print("Model ready.", flush=True)
+        try:
+            t0, audio, who, uid, ch = q.get(timeout=0.5)
+        except queue.Empty:
+            continue
         try:
             started = time.time()
-            text = run(audio)
+            text = (model_run(audio) or "").strip()
             hub.proc_s += time.time() - started
             hub.audio_s += len(audio) / SR
             hub.latency.append(max(0.0, time.time() - (t0 / 1000 + len(audio) / SR)))
@@ -494,8 +740,23 @@ async def main():
     args = ap.parse_args()
     if args.out:
         globals()["TRANSCRIPTS"] = Path(args.out)
-    engine = pick_engine(args.engine)
-    args.model = args.model or ENGINE_DEFAULTS[engine]
+    # Which model: --model (any repo, for experiments) > saved choice > default.
+    if args.model:
+        engine = pick_engine(args.engine)
+        want = ("custom", engine, args.model)
+    else:
+        here = [m for m in models_here() if m["available"]]
+        saved = load_settings().get("model")
+        forced = None if args.engine == "auto" else args.engine
+        choice = next((m for m in here if m["id"] == saved and (not forced or m["engine"] == forced)), None) \
+            or next((m for m in here if m.get("default") and (not forced or m["engine"] == forced)), None) \
+            or (here[0] if here and not forced else None)
+        if choice:
+            want = (choice["id"], choice["engine"], choice["repo"])
+        else:
+            engine = pick_engine(args.engine)
+            want = ("default", engine, ENGINE_DEFAULTS[engine])
+    engine = want[1]
     language = None if args.language == "auto" else args.language
 
     # One way to stop, on every OS: set this event (from any thread). Signals
@@ -516,15 +777,17 @@ async def main():
         threading.Thread(target=watch_parent, daemon=True).start()
 
     q: queue.Queue = queue.Queue()
-    hub = Hub(f"{args.model}")
-    hub.engine = engine
+    hub = Hub(want[2])
+    hub.engine, hub.want, hub.model_id, hub.loading, hub.model_error = engine, want, want[0], want[0], None
     hub.queue = q
     hub.loop = asyncio.get_running_loop()
     threading.Thread(target=hub.sample_resources, daemon=True).start()
     writer = Writer(hub)
-    threading.Thread(target=transcriber, args=(q, writer, hub, engine, args.model, language), daemon=True).start()
+    updater = Updater(hub)
+    threading.Thread(target=updater.loop, daemon=True).start()
+    threading.Thread(target=transcriber, args=(q, writer, hub, language), daemon=True).start()
 
-    def http(connection, request):
+    async def http(connection, request):
         # Plain HTTP (the dashboard); WebSocket upgrades fall through to handle().
         # Only answer requests addressed to this machine (blocks DNS-rebinding
         # tricks where another website pretends to be 127.0.0.1).
@@ -560,6 +823,27 @@ async def main():
                     hit = next((k for k in (f"call:{c['id']}", f"channel:{ch_key(c)}", f"server:{srv_key(c)}") if k in arch), None)
                     calls.append({**c, "srvKey": srv_key(c), "chKey": ch_key(c), "archived": hit})
             return respond(calls)
+        if path == "/api/models":
+            return respond({"current": hub.model_id, "loading": hub.loading, "error": hub.model_error, "models": models_here()})
+        if path == "/api/models/select":
+            if request.headers.get("X-CT") != "1":
+                return respond({"error": "forbidden"}, status=403)
+            mid = params.get("id", "")
+            m = next((m for m in models_here() if m["id"] == mid and m["available"]), None)
+            if not m:
+                return respond({"error": "model not available on this machine"}, status=400)
+            hub.want = (m["id"], m["engine"], m["repo"])
+            save_settings(model=m["id"])
+            return respond({"ok": True, "loading": m["id"]})
+        if path == "/api/update":
+            return respond(updater.state)
+        if path in ("/api/update/check", "/api/update/apply"):
+            if request.headers.get("X-CT") != "1":
+                return respond({"error": "forbidden"}, status=403)
+            # git can take seconds: never block the audio event loop on it
+            if path == "/api/update/check":
+                return respond(await asyncio.to_thread(updater.check))
+            return respond(await asyncio.to_thread(updater.apply))
         if path == "/api/shutdown":
             # The app asks the server to stop cleanly (Windows has no Ctrl-C for
             # background processes). Same guard as other changes.
@@ -631,6 +915,7 @@ async def main():
             return await dashboard(ws)
         people = hub.people
         hub.extensions += 1
+        hub.ext_sockets.add(ws)
         last_status = time.time()
         print("Extension connected.", flush=True)
 
@@ -670,6 +955,7 @@ async def main():
                           f"(queue {q.qsize()})", flush=True)
         finally:
             hub.extensions -= 1
+            hub.ext_sockets.discard(ws)
             flusher.cancel()
             for p in people.values():
                 p.flush()

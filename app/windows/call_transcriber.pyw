@@ -175,6 +175,27 @@ class App:
             self.proc = None
         self.start()
 
+    def relaunch_after_update(self, deps: bool):
+        self.splash("Installing the update…")
+        self.stopped_by_user = True
+        p = self.proc
+        if p and p.poll() is None:
+            self.stop_pids([p.pid])
+        if deps:
+            import shutil
+            uv = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv.exe")
+            subprocess.run([uv, "sync"], cwd=SERVER_DIR, creationflags=subprocess.CREATE_NO_WINDOW if IS_WIN else 0,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # free the single-instance lock, start the new launcher, then quit this one
+        global _instance_lock
+        if _instance_lock:
+            _instance_lock.close(); _instance_lock = None
+        exe = Path(sys.executable)
+        exe = exe.with_name("pythonw.exe") if IS_WIN else exe
+        subprocess.Popen([str(exe), str(Path(__file__).resolve())], cwd=ROOT,
+                         creationflags=(subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP) if IS_WIN else 0)
+        self.quit()
+
     # ---------------------------------------------------------------- window / tray
     def show(self, *_):
         if self.window:
@@ -227,6 +248,22 @@ class Api:
         fn = {"start": self._app.start, "stop": self._app.stop, "restart": self._app.restart}.get(action)
         if fn:
             threading.Thread(target=fn, daemon=True).start()
+        return True
+
+    def save(self, name, content):
+        """Save dialog for transcript exports."""
+        downloads = Path.home() / "Downloads"
+        res = self._app.window.create_file_dialog(webview.SAVE_DIALOG, directory=str(downloads if downloads.exists() else Path.home()),
+                                                  save_filename=name)
+        path = res[0] if isinstance(res, (list, tuple)) and res else res
+        if not path:
+            return False
+        Path(path).write_text(content, encoding="utf-8", newline="")
+        return True
+
+    def relaunch(self, rebuild=False, deps=False):
+        """After the server pulled a new release: stop it, refresh dependencies, reopen."""
+        threading.Thread(target=self._app.relaunch_after_update, args=(bool(deps),), daemon=True).start()
         return True
 
 

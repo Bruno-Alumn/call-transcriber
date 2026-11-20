@@ -8,6 +8,7 @@ dependencies = [
     # (torch/CUDA) engine is installed separately by the Windows installer when
     # an NVIDIA GPU is present.
     "mlx-audio>=0.6.7; sys_platform == 'darwin'",
+    "mlx-whisper>=0.4; sys_platform == 'darwin'",
     "onnx-asr[cpu,hub]>=0.12; sys_platform != 'darwin'",
     "numpy>=2.5.5",
     "psutil>=6",

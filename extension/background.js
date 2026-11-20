@@ -36,6 +36,11 @@ async function connectServer() {
   ws.onopen = () => { wsOpen = true; broadcast(); };
   ws.onclose = () => { wsOpen = false; broadcast(); setTimeout(connectServer, 3000); };
   ws.onerror = () => {};
+  // The server tells us when an app update changed the extension's files:
+  // reload from disk (unpacked extension), then re-hook open Discord tabs.
+  ws.onmessage = (e) => {
+    try { if (JSON.parse(e.data).type === 'reload') chrome.runtime.reload(); } catch {}
+  };
 }
 
 chrome.runtime.onConnect.addListener((port) => {
