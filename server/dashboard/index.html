@@ -724,7 +724,7 @@ function renderActivity(s) {
   const bucketMin = spanMin <= 75 ? 2 : spanMin <= 240 ? 5 : 15;
   const bms = bucketMin * 60000;
   const b0 = Math.floor(startT / bms) * bms, nb = Math.max(1, Math.ceil((endT - b0) / bms));
-  const keys = s.per.map((p) => p.k);   // everyone, most talk first (bottom of each stack)
+  const keys = s.per.map((p) => p.k).sort((a, b) => colorIndex.get(a) - colorIndex.get(b));   // everyone, in colour order (stable while live)
   const buckets = Array.from({ length: nb }, () => new Map());
   for (const r of lines) {
     if (r.end < b0) continue;
@@ -1720,6 +1720,7 @@ function renderPers() {
   if (personaInfo && !personaInfo.available) { box.innerHTML = `<div class="pers-empty">${esc(personaInfo.reason || 'Not available on this computer.')}</div>`; return; }
   const top = persCandidates();
   if (!top.length) { box.innerHTML = '<div class="pers-empty">Appears once people have talked for a bit.</div>'; return; }
+  const restTop = box.querySelector('.pers-rest')?.scrollTop || 0;   // keep the reader's place across the 5 s refresh
   box.innerHTML = top.map((p) => {
     const o = persOverview.get(p.k);
     const body = o?.sentence ? `<div class="ps">${esc(o.sentence)}</div><div class="pt">${esc(o.traits || '')}${o.at ? ` · ${ago(o.at)}` : ''}</div>`
@@ -1727,6 +1728,7 @@ function renderPers() {
     return `<button class="pp" data-k="${esc(p.k)}" title="${esc(nameFor(p.k))}: open the full read"><span class="pn"><span class="swatch" style="background:${colorFor(p.k)}"></span>${esc(nameFor(p.k))}</span>${body}</button>`;
   }).join('') + persRest(top);
   box.querySelectorAll('.pp, .pers-rest [data-k]').forEach((b) => b.onclick = () => personaRead(b.dataset.k));
+  if (box.querySelector('.pers-rest')) box.querySelector('.pers-rest').scrollTop = restTop;
   box.querySelector('.pers-rest .tog')?.addEventListener('click', () => { persRestOpen = !persRestOpen; renderPers(); });
 }
 async function refreshPers() {
