@@ -8,5 +8,6 @@ contextBridge.exposeInMainWorld('ctApp', {
   relaunch: (opts) => ipcRenderer.send('ct:relaunch', { rebuild: !!opts?.rebuild, deps: !!opts?.deps, app: !!opts?.app }),
   openDiscord: () => ipcRenderer.send('ct:open-discord'),
   setPaused: (on) => ipcRenderer.send('ct:pause', !!on),
+  setMuted: (on) => ipcRenderer.send('ct:mute', !!on),
   onState: (fn) => ipcRenderer.on('ct:app-state', (_e, s) => fn(s)),
 });

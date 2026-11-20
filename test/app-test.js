@@ -58,6 +58,14 @@ const fail = (msg) => { console.log('FAIL', msg); process.exitCode = 1; };
   }
   await sleep(4000);                                     // model ready + app's socket connected
   console.log('STEP server up; window visible:', await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => [w.getTitle(), w.isVisible()])));
+  // Mute the call for the user (as the dashboard button does); transcription must still hear everyone.
+  if (dash) {
+    for (let i = 0; i < 40 && !(await dash.evaluate(() => !!window.ctApp && location.href.startsWith('http'))); i++) await sleep(250);
+    await dash.evaluate(() => window.ctApp.setMuted(true)); await sleep(300);
+  }
+  const mutedNow = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.webContents).find((wc) => wc.getURL().startsWith('http://localhost:8899'))?.isAudioMuted());
+  console.log('CALL AUDIO MUTED FOR USER:', mutedNow);
+  if (!mutedNow) fail('mute toggle did not mute the Discord window');
   await discord.click('#join');
   const t0 = Date.now(); let c0 = null;
   await sleep(3000);

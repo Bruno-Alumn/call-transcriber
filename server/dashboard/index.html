@@ -140,6 +140,7 @@ header .pills { flex-wrap: nowrap; flex: none; }
 .pill.discord-btn { background: #5865f2; color: #fff; border-color: transparent; font-weight: 600; }
 .pill.discord-btn:hover { background: #4752c4; }
 .pill[hidden] { display: none; }
+#p-mute.on { background: #e6676722; border-color: #e6676766; }
 .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
 .pill.ok .dot { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 22%, transparent); }
 .pill.warn .dot { background: var(--warn); }
@@ -280,6 +281,7 @@ svg text { fill: var(--text-muted); font-size: 11px; font-family: inherit; }
       <button class="pill" id="p-server" aria-haspopup="dialog"><span class="dot"></span><span>Server</span></button>
       <button class="pill" id="p-ext" aria-haspopup="dialog"><span class="dot"></span><span>Extension</span></button>
       <button class="pill" id="p-model" aria-haspopup="dialog"><span class="dot"></span><span>Model</span></button>
+      <button class="pill" id="p-mute" hidden title="Mute the call for you; transcription still hears everyone (⌘⇧M / Ctrl+Shift+M)"><span id="p-mute-ic">🔊</span><span id="p-mute-t">Call audio</span></button>
       <button class="pill discord-btn" id="p-discord" hidden title="Show the Discord window (⌘D / Ctrl+D)"><svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M19.3 5.3A16.6 16.6 0 0 0 15.2 4l-.5 1a15 15 0 0 0-5.4 0L8.8 4a16.5 16.5 0 0 0-4.1 1.3C2.1 9.2 1.4 13 1.7 16.7a16.7 16.7 0 0 0 5 2.6l1.1-1.7a11 11 0 0 1-1.7-.8l.4-.3a11.9 11.9 0 0 0 11 0l.4.3-1.7.8 1.1 1.7a16.6 16.6 0 0 0 5-2.6c.4-4.3-.7-8-3-11.4ZM8.7 14.5c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm6.6 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z"/></svg><span>Discord</span></button>
     </div>
   </header>
@@ -580,7 +582,7 @@ let inApp = !!desk || !!window.webkit?.messageHandlers?.app || !!window.pywebvie
 addEventListener('pywebviewready', () => { inApp = true; refreshPop?.(); });
 const appCmd = (action) => desk ? desk.server(action) : window.pywebview?.api ? window.pywebview.api.server(action) : window.webkit.messageHandlers.app.postMessage({ action });
 let appState = {};
-desk?.onState((s) => { appState = s || {}; renderState?.(); refreshPop?.(); });
+desk?.onState((s) => { appState = s || {}; renderState?.(); refreshPop?.(); renderMute?.(); });
 // Save a file: native Save dialog in the apps, a download in a browser.
 function saveFile(name, content, mime = 'text/plain') {
   if (desk) return desk.save(name, content);
@@ -676,13 +678,14 @@ function popHtml(which) {
         : !e.inCall ? 'Join a voice channel in the Discord window and transcription starts automatically.' : 'Transcribing everyone in the call.';
       return `<h3>Discord (built in)</h3><dl>
         <dt>Window</dt><dd>${appState.discordOpen ? 'Open' : 'Hidden (still connected)'}</dd>
+        <dt>Call audio</dt><dd>${appState.muted ? 'Muted for you · still transcribed' : 'On'}</dd>
         <dt>In a call</dt><dd>${e.inCall ? 'Yes' : 'No'}</dd>
         <dt>Channel</dt><dd>${e.channel ? esc(e.channel.name || '') + (e.channel.guildName ? ' · ' + esc(e.channel.guildName) : '') : '—'}</dd>
         <dt>People</dt><dd>${e.streams || 0} streams · ${e.named || 0} named</dd>
         <dt>Last report</dt><dd>${e.lastReport ? ago(e.lastReport) : '—'}</dd>
         ${e.errors?.length ? `<dt>Errors</dt><dd>${esc(e.errors.join('; ')).slice(0, 120)}</dd>` : ''}</dl>
         <div class="hint">${hint}</div>
-        <div class="btns"><button data-desk="discord">Show Discord</button><button data-desk="pause">${appState.paused ? 'Resume' : 'Pause'}</button></div>`;
+        <div class="btns"><button data-desk="discord">Show Discord</button><button data-desk="mute">${appState.muted ? 'Unmute call' : 'Mute call'}</button><button data-desk="pause">${appState.paused ? 'Resume' : 'Pause'}</button></div>`;
     }
     const hint = !e.connected ? 'Chrome isn\'t connected. Make sure Chrome is open and the Discord Transcriber extension is enabled in chrome://extensions.'
       : !e.discordTab ? 'Open discord.com in Chrome (or reload the Discord tab).'
@@ -744,11 +747,21 @@ function refreshPop() { if (popFor) { $('#pop').innerHTML = popHtml(popFor); wir
 function closePop() { popFor = null; $('#pop').style.display = 'none'; }
 $('#p-server').onclick = (e) => { e.stopPropagation(); openPop('server', e.currentTarget); };
 $('#p-ext').onclick = (e) => { e.stopPropagation(); openPop('ext', e.currentTarget); };
-if (desk) { $('#p-discord').hidden = false; $('#p-discord').onclick = () => desk.openDiscord(); }
+if (desk) {
+  $('#p-discord').hidden = false; $('#p-discord').onclick = () => desk.openDiscord();
+  $('#p-mute').hidden = false; $('#p-mute').onclick = () => desk.setMuted(!appState.muted);
+}
+function renderMute() {
+  if (!desk) return;
+  $('#p-mute-ic').textContent = appState.muted ? '🔇' : '🔊';
+  $('#p-mute-t').textContent = appState.muted ? 'Muted' : 'Call audio';
+  $('#p-mute').classList.toggle('on', !!appState.muted);
+}
 document.addEventListener('click', (e) => {
   const b = e.target.closest?.('[data-desk]'); if (!b || !desk) return;
   if (b.dataset.desk === 'discord') desk.openDiscord();
   if (b.dataset.desk === 'pause') desk.setPaused(!appState.paused);
+  if (b.dataset.desk === 'mute') desk.setMuted(!appState.muted);
 });
 $('#p-model').onclick = (e) => { e.stopPropagation(); loadModels(); openPop('model', e.currentTarget); };
 document.addEventListener('click', (e) => { if (popFor && !$('#pop').contains(e.target)) closePop(); });

@@ -34,6 +34,7 @@ if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
 let dash = null, discord = null, tray = null;
 let server = null, stoppedByUser = false, quitting = false, paused = false;
 let ws = null, wsOpen = false;
+let muted = false;                       // Discord's sound off for you; transcription still hears everyone
 
 // ----------------------------------------------------------------- helpers
 const isDiscordUrl = (u) => {
@@ -167,7 +168,20 @@ function broadcast() {
   if (dash && !dash.isDestroyed()) dash.webContents.send('ct:app-state', appState());
   updateTray();
 }
-const appState = () => ({ discordOpen: !!discord && !discord.isDestroyed() && discord.isVisible(), paused, connected: wsOpen });
+const appState = () => ({ discordOpen: !!discord && !discord.isDestroyed() && discord.isVisible(), paused, muted, connected: wsOpen });
+
+// App settings that persist (userData/settings.json).
+const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
+const loadSettings = () => { try { return JSON.parse(fs.readFileSync(settingsFile(), 'utf8')); } catch { return {}; } };
+const saveSetting = (k, v) => { try { fs.writeFileSync(settingsFile(), JSON.stringify({ ...loadSettings(), [k]: v })); } catch {} };
+
+// Mute the call for you only: silences the Discord window's output. The hook
+// reads each person's audio before it reaches the speakers, so it keeps going.
+function setMuted(on) {
+  muted = !!on; saveSetting('muted', muted);
+  if (discord && !discord.isDestroyed()) discord.webContents.setAudioMuted(muted);
+  broadcast(); buildMenu();
+}
 
 // Names learned in earlier calls (Discord-in-app's own memory, like the extension's storage).
 const namesFile = () => path.join(app.getPath('userData'), 'names.json');
@@ -215,6 +229,7 @@ ipcMain.handle('ct:save', async (e, name, content) => {
 ipcMain.on('ct:relaunch', (e, opts) => { if (fromDash(e)) relaunchAfterUpdate(opts || {}); });
 ipcMain.on('ct:open-discord', (e) => { if (fromDash(e)) showDiscord(); });
 ipcMain.on('ct:pause', (e, on) => { if (fromDash(e)) setPaused(!!on); });
+ipcMain.on('ct:mute', (e, on) => { if (fromDash(e)) setMuted(!!on); });
 
 function setPaused(on) { paused = on; broadcast(); buildMenu(); }
 
@@ -290,6 +305,7 @@ function createDiscord() {
     },
   });
   const wc = discord.webContents;
+  wc.setAudioMuted(muted);
   wc.on('will-navigate', (e, url) => { if (!isDiscordUrl(url)) { e.preventDefault(); openExternal(url); } });
   wc.on('will-redirect', (e, url) => { if (!isDiscordUrl(url)) { e.preventDefault(); openExternal(url); } });
   wc.setWindowOpenHandler(({ url }) => { openExternal(url); return { action: 'deny' }; });
@@ -354,6 +370,7 @@ function buildMenu() {
     { label: 'Show Discord', accelerator: 'CmdOrCtrl+D', click: showDiscord },
     { label: 'Show Dashboard', accelerator: 'CmdOrCtrl+1', click: showMain },
     { type: 'separator' },
+    { label: 'Mute Call Audio (keeps transcribing)', type: 'checkbox', checked: muted, accelerator: 'CmdOrCtrl+Shift+M', click: (i) => setMuted(i.checked) },
     { label: 'Pause Transcribing', type: 'checkbox', checked: paused, click: (i) => setPaused(i.checked) },
     { label: 'Reload Discord', click: () => discord && !discord.isDestroyed() && discord.webContents.reload() },
   ] });
@@ -389,6 +406,7 @@ function updateTray() {
     { label: 'Open Call Transcriber', click: showMain },
     { label: 'Open Discord', click: showDiscord },
     { type: 'separator' },
+    { label: 'Mute call audio (keeps transcribing)', type: 'checkbox', checked: muted, click: (i) => setMuted(i.checked) },
     { label: 'Pause transcribing', type: 'checkbox', checked: paused, click: (i) => setPaused(i.checked) },
     { label: 'Restart server', click: restartServer },
     { label: server ? 'Stop server' : 'Start server', click: () => (server ? stopServer() : startServer()) },
@@ -418,6 +436,7 @@ app.on('web-contents-created', (_e, wc) => {
 });
 
 app.whenReady().then(() => {
+  muted = !!loadSettings().muted;
   buildMenu();
   powerSaveBlocker.start('prevent-app-suspension');        // keep transcribing at full speed in the background
   if (IS_WIN && fs.existsSync(ICON_PNG)) {
