@@ -379,6 +379,9 @@ body.editing .card.drop-before { box-shadow: 0 -3px 0 0 var(--accent); }
 .plug-deco { margin-left: 6px; }
 .plug-panel .body { font-size: 12.5px; }
 #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 60; background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 8px 14px; font-size: 12.5px; box-shadow: 0 8px 28px rgba(0,0,0,.18); display: none; }
+.mrow input[type=checkbox] { grid-row: 1 / span 3; grid-column: 2; align-self: center; width: 16px; height: 16px; accent-color: var(--accent); }
+label.mrow { cursor: pointer; }
+.mrow i { font-style: normal; color: var(--accent); font-weight: 500; }
 /* ---------- house style: flat, dense, typographic (overrides the defaults above) */
 :root { --radius: 6px; --shadow: none; --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; }
 body { font-size: 13.5px; }
@@ -836,7 +839,8 @@ function renderState() {
   set('#p-server', 'ok', 'Server running · ' + fmtDur(st.uptime));
   const [ec, et] = extSummary(st); set('#p-ext', ec, et);
   const nice = modelsInfo?.models?.find((m) => m.id === (st.modelLoading || st.modelId))?.name || st.model.split('/').pop().replace(/-mlx$/, '');
-  set('#p-model', st.modelReady ? 'ok' : 'warn', (st.modelReady ? '' : 'Loading ') + nice + (st.queue > 1 ? ` · ${st.queue} queued` : ''));
+  const refineNice = st.refine ? ' + ' + (modelsInfo?.models?.find((m) => m.id === st.refine)?.name.split('·').pop().trim() || '2B') + ' rewrite' : '';
+  set('#p-model', st.modelReady ? 'ok' : 'warn', (st.modelReady ? '' : 'Loading ') + nice + refineNice + (st.queue > 1 ? ` · ${st.queue} queued` : '') + (st.refineLoading ? ' · loading 2B' : ''));
   $('#livedot').style.visibility = st.ext?.inCall && isToday() ? 'visible' : 'hidden';
   const ppl = [...st.people].sort((a, b) => (b.talking - a.talking) || (b.lastSeen - a.lastSeen));
   for (const p of ppl) if (!/^user-\d{4}$/.test(p.name)) { latestName.set(p.user, p.name); names[p.user] = p.name; }
@@ -906,19 +910,32 @@ function popHtml(which) {
   if (which === 'model') {
     if (!st) return `<h3>Speech model</h3><div class="hint">Waiting for the server.</div>`;
     const runsOn = { mlx: 'Apple GPU (MLX)', torch: 'NVIDIA GPU (CUDA)', onnx: 'CPU (ONNX Runtime)' };
-    const list = (modelsInfo?.models || []).filter((m) => m.available);
+    const mi = modelsInfo || {};
+    const list = (mi.models || []).filter((m) => m.available);
+    const stat = (m) => (m.stats ? `${m.stats.wer}% words wrong · ${m.stats.speed}× real time${m.stats.mem ? ' · ' + m.stats.mem + ' GB' : ''}` : '') + ` · ${runsOn[m.engine] || m.engine}`;
+    if (mi.fallback) {
+      const m = list[0];
+      return `<h3>Speech model</h3><div class="models">${m ? `<div class="mrow on"><span class="n">${esc(m.name)}</span><span class="a">${esc(m.about)}</span><span class="k">${stat(m)}</span></div>` : ''}</div>
+        <div class="hint">Granite runs on Apple Silicon Macs and PCs with an NVIDIA graphics card.</div>`;
+    }
+    const sel = new Set(mi.selected || []);
+    const both = sel.size === 2;
+    const busy = st.modelLoading || st.refineLoading;
     const rows = list.map((m) => {
-      const cur = m.id === st.modelId, loading = st.modelLoading === m.id;
-      const k = m.stats ? `${m.stats.wer}% words wrong · ${m.stats.speed}× real time${m.stats.mem ? ' · ' + m.stats.mem + ' GB' : ''}` : 'not benchmarked on this kind of machine';
-      return `<div class="mrow${cur ? ' on' : ''}"><span class="n">${esc(m.name)}${m.default ? ' · default' : ''}</span>
-        <span class="a">${esc(m.about)}</span><span class="k">${k} · ${runsOn[m.engine] || m.engine}</span>
-        <button data-model="${esc(m.id)}" ${cur || loading || st.modelLoading ? 'disabled' : ''}>${loading ? 'Loading…' : cur ? 'In use' : 'Use'}</button></div>`;
+      const on = sel.has(m.id), only = on && sel.size === 1;
+      const role = !on ? '' : m.id === 'granite-470m' ? (both ? 'live' : 'live') : (both ? 'rewrites each line' : 'live');
+      return `<label class="mrow${on ? ' on' : ''}"><span class="n">${esc(m.name)}${role ? ` · <i>${role}</i>` : ''}</span>
+        <span class="a">${esc(m.about)}</span><span class="k">${stat(m)}</span>
+        <input type="checkbox" data-mtoggle="${esc(m.id)}" ${on ? 'checked' : ''} ${only || busy ? 'disabled' : ''} title="${only ? 'At least one model stays on' : ''}"></label>`;
     }).join('');
+    const status = busy ? `Loading ${esc(busy)}… new lines wait and are transcribed once it's ready.`
+      : both ? `470M writes each line live; 2B rewrites it a few seconds later${st.refined ? ` (${st.refined} rewritten so far)` : ''}.`
+      : `Running ${esc((list.find((m) => sel.has(m.id)) || {}).name || st.model)} · ${st.res?.speed ? Math.round(st.res.speed) + '× real time' : 'idle'}`;
     return `<h3>Speech model</h3>
-      <div class="hint" style="margin-top:0">${st.modelLoading ? 'Switching… new lines wait in line and are transcribed by the new model.' : `Running ${esc(st.model.split('/').pop())} · ${st.res?.speed ? Math.round(st.res.speed) + '× real time' : 'idle'}`}</div>
+      <div class="hint" style="margin-top:0">${status}</div>
       ${st.modelError ? `<div class="hint" style="color:var(--bad)">${esc(st.modelError)}</div>` : ''}
       <div class="models">${rows || '<div class="hint">Loading list…</div>'}</div>
-      <div class="hint">Accuracy measured on real meeting audio. First use of a model downloads it (0.6–5 GB). Nothing leaves your computer.</div>`;
+      <div class="hint">Turn on both to have 2B rewrite every line with its better accuracy, a few seconds after 470M writes it. 2B needs about 9 GB of memory. The first use of a model downloads it. Nothing leaves your computer.</div>`;
   }
 }
 function openPop(which, anchor) {
@@ -934,9 +951,13 @@ let modelsInfo = null;
 async function loadModels() { modelsInfo = await fetch('/api/models').then((r) => r.json()).catch(() => null); refreshPop(); }
 function wirePop() {
   $('#pop').classList.toggle('wide', popFor === 'model');
-  $('#pop').querySelectorAll('button[data-model]').forEach((b) => b.onclick = async () => {
-    b.textContent = 'Loading…'; b.disabled = true;
-    await api('/api/models/select?id=' + encodeURIComponent(b.dataset.model)).catch(() => {});
+  $('#pop').querySelectorAll('input[data-mtoggle]').forEach((b) => b.onchange = async () => {
+    const sel = new Set(modelsInfo?.selected || []);
+    if (b.checked) sel.add(b.dataset.mtoggle); else sel.delete(b.dataset.mtoggle);
+    if (!sel.size) { b.checked = true; return; }
+    $('#pop').querySelectorAll('input[data-mtoggle]').forEach((x) => { x.disabled = true; });
+    await api('/api/models/select?ids=' + encodeURIComponent([...sel].join(','))).catch(() => {});
+    await loadModels();
   });
   $('#pop').querySelectorAll('button[data-a]').forEach((b) => b.onclick = () => { appCmd(b.dataset.a); closePop(); });
   $('#pop').querySelectorAll('button[data-upd]').forEach((b) => b.onclick = async () => {
@@ -1442,7 +1463,7 @@ async function openSettings() {
   const tog = (id, label, on, note = '') => `<label class="srow"><span><b>${label}</b>${note ? `<small>${note}</small>` : ''}</span><input type="checkbox" data-set="${id}" ${on ? 'checked' : ''}></label>`;
   const sel = (id, label, cur, opts, note = '') => `<label class="srow"><span><b>${label}</b>${note ? `<small>${note}</small>` : ''}</span><select data-set="${id}">${opts.map(([v, t]) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${t}</option>`).join('')}</select></label>`;
   const langs = { en: 'English', auto: 'Detect automatically', es: 'Spanish', fr: 'French', de: 'German', it: 'Italian', pt: 'Portuguese', nl: 'Dutch', pl: 'Polish', ru: 'Russian', uk: 'Ukrainian', ja: 'Japanese', zh: 'Chinese', ko: 'Korean' };
-  const model = modelsInfo?.models?.find((m) => m.id === liveState?.modelId)?.name || liveState?.model || '—';
+  const model = (modelsInfo?.models?.find((m) => m.id === liveState?.modelId)?.name || liveState?.model || '—') + (liveState?.refine ? ' + 2B rewrite' : '');
   box.innerHTML = `<h3>Settings</h3>
     <div class="pbody">
       ${as ? `<div class="sh">App</div>
@@ -1791,6 +1812,14 @@ function connect() {
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
     if (m.type === 'state') { liveState = m; renderState(); if (!calls.length) renderWhere(); emit('state', m); }
+    else if (m.type === 'replace') {
+      // the 2B pass rewrote some live lines: swap them in place
+      const d = today(), gone = new Set(m.ids || []);
+      if (dayCache.has(d)) { const arr = dayCache.get(d).filter((r) => !gone.has(r.id)); arr.push(...(m.lines || [])); arr.sort((a, b) => a.t - b.t); dayCache.set(d, arr); }
+      const c = currentCall();
+      if (c && c.day === d) { allLines = dayCache.get(d) || allLines; lines = linesOf(c, allLines); renderAll(); }
+      setTimeout(() => emit('replace', m), 0);
+    }
     else if (m.type === 'line') {
       setTimeout(() => emit('line', m), 0);
       if (!/^user-\d{4}$/.test(m.speaker) && m.user) names[m.user] = m.speaker;

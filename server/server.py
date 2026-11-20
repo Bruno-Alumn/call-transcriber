@@ -136,16 +136,48 @@ class Writer:
     def write(self, t_ms: float, dur_s: float, uid: str, speaker: str, text: str, ch: dict | None = None):
         when = dt.datetime.fromtimestamp(t_ms / 1000)
         md, jl = self._paths(when)
+        rec = {"id": os.urandom(5).hex(), "t": int(t_ms), "end": int(t_ms + dur_s * 1000), "user": uid, "speaker": speaker, "text": text}
         with self.lock:
-            self.pending.append((t_ms, when, speaker, text, (ch or {}).get("name"), time.time()))
+            self.pending.append((t_ms, when, speaker, text, (ch or {}).get("name"), time.time(), rec["id"]))
         self.flush_md()
-        rec = {"t": int(t_ms), "end": int(t_ms + dur_s * 1000), "user": uid, "speaker": speaker, "text": text}
         if ch and ch.get("id"):
             rec.update({"ch": ch["id"], "chName": ch.get("name"), "guild": ch.get("guild"), "guildName": ch.get("guildName")})
         with jl.open("a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         print(f"[{when:%H:%M:%S}] {speaker}: {text}", flush=True)
         self.hub.publish({"type": "line", **rec})
+        return rec
+
+    def replace(self, old: list[dict], parts: list[tuple[float, float, str]]):
+        """The 2B pass rewrote an utterance: new lines replace the live ones, in
+        the data file, the dashboard and (if not written yet) the .md file."""
+        if not old or not parts:
+            return
+        base = old[0]
+        ids = [r["id"] for r in old]
+        new = []
+        for i, (t_ms, end_ms, text) in enumerate(parts):
+            rec = {"id": os.urandom(5).hex(), "t": int(t_ms), "end": int(max(end_ms, t_ms + 300)), "user": base["user"],
+                   "speaker": base["speaker"], "text": text, "refined": True}
+            for k in ("ch", "chName", "guild", "guildName"):
+                if k in base:
+                    rec[k] = base[k]
+            if i == 0:
+                rec["replaces"] = ids
+            new.append(rec)
+        when = dt.datetime.fromtimestamp(new[0]["t"] / 1000)
+        _, jl = self._paths(when)
+        with jl.open("a", encoding="utf-8") as f:
+            for rec in new:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        with self.lock:
+            if all(any(x[6] == i for x in self.pending) for i in ids):      # not in the .md yet: swap them
+                self.pending = [x for x in self.pending if x[6] not in ids]
+                for rec in new:
+                    w = dt.datetime.fromtimestamp(rec["t"] / 1000)
+                    self.pending.append((rec["t"], w, rec["speaker"], rec["text"], rec.get("chName"), time.time(), rec["id"]))
+        self.hub.publish({"type": "replace", "ids": ids, "lines": new})
+        self.flush_md()
 
     def watermark(self) -> float:
         """Clock time (ms) of the earliest speech that could still produce a line:
@@ -162,6 +194,10 @@ class Writer:
             pass
         if getattr(self.hub, "busy_t0", None) is not None:
             marks.append(self.hub.busy_t0)
+        try:      # lines waiting for the 2B rewrite (gives up on ones older than a minute)
+            marks += [it["t0"] for it in list(getattr(self.hub, "refine_q", ())) if time.time() - it["queued"] < 60]
+        except Exception:
+            pass
         return min(marks) if marks else float("inf")
 
     def flush_md(self, force: bool = False):
@@ -177,7 +213,7 @@ class Writer:
                 return
             cut = max(i for i, x in enumerate(self.pending) if x in ready) + 1
             ready, self.pending = self.pending[:cut], self.pending[cut:]
-        for t_ms, when, speaker, text, chname, _ in ready:
+        for t_ms, when, speaker, text, chname, _, _ in ready:
             md, _ = self._paths(when)
             with md.open("a", encoding="utf-8") as f:
                 f.write(f"**[{when:%H:%M:%S}] {speaker}{f' · {chname}' if chname else ''}:** {text}\n\n")
@@ -210,6 +246,9 @@ def load_day(day: str) -> list[dict]:
                 continue
             words = max(1, len(text.split()))
             recs.append({"t": t, "end": t + int(words / 2.6 * 1000), "user": "", "speaker": who, "text": text})
+    gone = {x for r in recs for x in (r.get("replaces") or [])}   # lines the 2B pass rewrote
+    if gone:
+        recs = [r for r in recs if r.get("id") not in gone]
     recs.sort(key=lambda r: r["t"])
     return recs
 
@@ -556,6 +595,8 @@ class Hub:
         return {"type": "state", "model": self.model, "engine": getattr(self, "engine", None), "modelReady": self.model_ready,
                 "modelId": getattr(self, "model_id", None), "modelLoading": getattr(self, "loading", None),
                 "modelError": getattr(self, "model_error", None),
+                "refine": getattr(self, "refine_id", None), "refineLoading": getattr(self, "refine_loading", None),
+                "refineQueue": len(getattr(self, "refine_q", ()) or ()), "refined": getattr(self, "refined", 0),
                 "extensions": self.extensions, "ext": ext, "people": ppl,
                 "accounts": self.accounts_state(now), "own": sorted(self.own_ids()), "queue": self.queue.qsize() if self.queue else 0,
                 "uptime": int(now - self.started), "now": int(now * 1000), "pid": os.getpid(),
@@ -629,26 +670,20 @@ ENGINE_DEFAULTS = {
 # word error rate % and speed (x real time) on the machines we tested.
 MODELS = [
     {"id": "granite-470m", "name": "Granite Speech 5.0 · 470M", "default": True,
-     "about": "Best all-rounder: near-top accuracy, very fast, light. English + 6 languages.", "langs": "English + 6 more",
+     "about": "Fast and light: transcribes live. English + 6 languages.", "langs": "English + 6 more",
      "repos": {"mlx": "ibm-granite/granite-speech-5.0-470m-turboctc", "torch": "ibm-granite/granite-speech-5.0-470m-turboctc"},
      "bench": {"mlx": {"wer": 5.5, "speed": 249, "mem": 1.6}, "torch": {"wer": 5.5, "speed": 82, "mem": 0.9}}},
     {"id": "granite-2b", "name": "Granite Speech 5.0 · 2B",
-     "about": "Most accurate we measured; ~5x the memory and much slower. English + 6 languages.", "langs": "English + 6 more",
+     "about": "The most accurate; about 5x the memory and much slower. English + 6 languages.", "langs": "English + 6 more",
      "repos": {"mlx": "ibm-granite/granite-speech-5.0-2b", "torch": "ibm-granite/granite-speech-5.0-2b"},
      "bench": {"mlx": {"wer": 5.4, "speed": 13, "mem": 9.1}, "torch": {"wer": 5.4, "speed": 11}}},
-    {"id": "parakeet-v3", "name": "Parakeet TDT 0.6B v3",
-     "about": "Very fast, 25 European languages, auto-detects language.", "langs": "25 European",
-     "repos": {"mlx": "mlx-community/parakeet-tdt-0.6b-v3", "onnx": "nemo-parakeet-tdt-0.6b-v3"},
-     "bench": {"mlx": {"wer": 7.0, "speed": 116, "mem": 3.5}, "onnx": {"wer": 7.4, "speed": 30, "mem": 2.0}}},
-    {"id": "qwen3-1.7b", "name": "Qwen3-ASR · 1.7B",
-     "about": "52 languages incl. Chinese, Japanese, Korean, Arabic.", "langs": "52 languages",
-     "repos": {"mlx": "mlx-community/Qwen3-ASR-1.7B-8bit", "torch": "Qwen/Qwen3-ASR-1.7B-hf"},
-     "bench": {"mlx": {"wer": 8.5, "speed": 18, "mem": 5.5}, "torch": {"wer": 8.5, "speed": 10}}},
-    {"id": "whisper-turbo", "name": "Whisper large-v3-turbo",
-     "about": "OpenAI's model: 99 languages; least accurate on fast chatter.", "langs": "99 languages",
-     "repos": {"mlx": "mlx-community/whisper-large-v3-turbo", "torch": "openai/whisper-large-v3-turbo"},
-     "bench": {"mlx": {"wer": 13.0, "speed": 15, "mem": 2.5}, "torch": {"wer": 13.0, "speed": 30}}},
+    # Not offered: used automatically on PCs without an NVIDIA GPU, where Granite can't keep up.
+    {"id": "parakeet-v3", "name": "Parakeet TDT 0.6B v3", "fallback": True,
+     "about": "Used on this PC because it has no NVIDIA graphics card: Granite needs one to keep up.", "langs": "25 European",
+     "repos": {"onnx": "nemo-parakeet-tdt-0.6b-v3"},
+     "bench": {"onnx": {"wer": 7.4, "speed": 30, "mem": 2.0}}},
 ]
+GRANITE = ("granite-470m", "granite-2b")
 
 
 def engines_here() -> list[str]:
@@ -683,6 +718,25 @@ def models_here() -> list[dict]:
         out.append({**{k: v for k, v in m.items() if k != "repos"}, "engine": eng, "repo": m["repos"].get(eng) if eng else None,
                     "available": bool(eng), "stats": m.get("bench", {}).get(eng) if eng else None})
     return out
+
+
+def model_plan() -> dict:
+    """Which models run: the Granite ones you switched on (470M live, 2B live, or
+    470M live + 2B rewriting each line), or Parakeet when Granite can't run here."""
+    here = {m["id"]: m for m in models_here() if m["available"]}
+    granite = [g for g in GRANITE if g in here]
+    if not granite:
+        fb = here.get("parakeet-v3") or next(iter(here.values()), None)
+        return {"live": fb, "refine": None, "selected": [], "fallback": True}
+    st = load_settings()
+    sel = [g for g in (st.get("models") or []) if g in granite]
+    if not sel and st.get("model") in granite:          # the old single choice
+        sel = [st["model"]]
+    if not sel:
+        sel = ["granite-470m"] if "granite-470m" in granite else granite[:1]
+    live = here["granite-470m"] if "granite-470m" in sel else here[sel[0]]
+    refine = here["granite-2b"] if len(sel) == 2 else None
+    return {"live": live, "refine": refine, "selected": sel, "fallback": False}
 
 
 def settings_path() -> Path:
@@ -1118,6 +1172,16 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
     (utterances wait in the queue while the new model loads)."""
     import gc
     current, model_run = None, None
+    refine_cur, refine_run = None, None
+    def free_memory(engine):
+        gc.collect()
+        try:
+            if engine == "mlx":
+                sys.modules["mlx.core"].clear_cache()
+            elif engine == "torch":
+                sys.modules["torch"].cuda.empty_cache()
+        except Exception:
+            pass
     while True:
         lang = current_settings()["language"] if not language_forced else language
         want = (*hub.want, lang)                          # (id, engine, repo, language)
@@ -1151,7 +1215,42 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
             except Exception:
                 pass
             print("Model ready.", flush=True)
+        # The 2B rewrite pass: loaded when both models are on, dropped when not.
+        if hub.want_refine != refine_cur:
+            if hub.want_refine is None:
+                refine_run, refine_cur, hub.refine_id = None, None, None
+                hub.refine_q.clear()
+                free_memory(hub.engine)
+            else:
+                rid, reng, rrepo = hub.want_refine
+                hub.refine_loading = rid
+                print(f"Loading {rrepo} for the rewrite pass…", flush=True)
+                try:
+                    refine_run = load_engine(reng, rrepo, language)
+                    refine_run(np.zeros(SR, dtype=np.float32))
+                    refine_cur, hub.refine_id = hub.want_refine, rid
+                    print("Rewrite pass ready.", flush=True)
+                except Exception as e:
+                    print("rewrite model failed:", e, flush=True)
+                    hub.model_error = f"{rid}: {str(e)[:200]}"
+                    hub.want_refine, refine_cur, refine_run = None, None, None
+                hub.refine_loading = None
         writer.flush_md()
+        # Live lines first; the rewrite pass uses the time in between.
+        if refine_run and hub.refine_q and q.empty():
+            it = hub.refine_q.popleft()
+            if time.time() - it["queued"] < 60:
+                try:
+                    res2 = refine_run(it["audio"]) or ""
+                    text2 = tidy((res2["text"] if isinstance(res2, dict) else res2).strip())
+                    old_text = " ".join(r["text"] for r in it["lines"])
+                    if text2 and text2.lower() not in HALLUCINATIONS and text2 != old_text:
+                        writer.replace(it["lines"], refined_parts(text2, it))
+                        hub.refined += 1
+                except Exception as e:
+                    print("rewrite error:", e, flush=True)
+            writer.flush_md()
+            continue
         try:
             item = q.get(timeout=0.5)
             t0, audio, who, uid, ch = item[:5]
@@ -1177,12 +1276,26 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
             parts = [(text, 0.0, len(audio) / SR)]
         else:
             parts = split_timed(res["pieces"]) if isinstance(res, dict) and res.get("pieces") else split_by_text(text, len(audio) / SR)
+        written = []
         for part, a, b in parts:
             part = tidy(part)
             if part and part.lower() not in HALLUCINATIONS:
                 start = to_clock(marks, a)
-                writer.write(start, max(0.3, (to_clock(marks, b) - start) / 1000), uid, who, part, ch)
+                written.append(writer.write(start, max(0.3, (to_clock(marks, b) - start) / 1000), uid, who, part, ch))
+        if refine_run and written:
+            hub.refine_q.append({"t0": t0, "audio": audio, "marks": marks, "lines": written, "queued": time.time()})
         hub.busy_t0 = None
+
+
+def refined_parts(text: str, it: dict) -> list[tuple[float, float, str]]:
+    """Times for the rewritten text: if it splits into as many sentences as the
+    live lines, keep each live line's timing; otherwise share the utterance's
+    span by text length."""
+    lines, audio_s = it["lines"], len(it["audio"]) / SR
+    sents = split_by_text(text, audio_s) if current_settings()["splitLines"] else [(text, 0.0, audio_s)]
+    if len(sents) == len(lines):
+        return [(r["t"], r["end"], s[0]) for r, s in zip(lines, sents)]
+    return [(to_clock(it["marks"], a), to_clock(it["marks"], b), s) for s, a, b in sents]
 
 
 # ---------------------------------------------------------------- websocket
@@ -1204,12 +1317,9 @@ async def main():
         engine = pick_engine(args.engine)
         want = ("custom", engine, args.model)
     else:
-        here = [m for m in models_here() if m["available"]]
-        saved = load_settings().get("model")
         forced = None if args.engine == "auto" else args.engine
-        choice = next((m for m in here if m["id"] == saved and (not forced or m["engine"] == forced)), None) \
-            or next((m for m in here if m.get("default") and (not forced or m["engine"] == forced)), None) \
-            or (here[0] if here and not forced else None)
+        plan = model_plan()
+        choice = plan["live"] if plan["live"] and (not forced or plan["live"]["engine"] == forced) else None
         if choice:
             want = (choice["id"], choice["engine"], choice["repo"])
         else:
@@ -1238,6 +1348,10 @@ async def main():
     q: queue.Queue = queue.Queue()
     hub = Hub(want[2])
     hub.engine, hub.want, hub.model_id, hub.loading, hub.model_error = engine, want, want[0], want[0], None
+    rp = None if args.model else model_plan()["refine"]
+    hub.want_refine = (rp["id"], rp["engine"], rp["repo"]) if rp and rp["engine"] == engine else None
+    hub.refine_q = deque()               # utterances waiting for the 2B rewrite
+    hub.refine_id, hub.refine_loading, hub.refined = None, None, 0
     hub.queue = q
     hub.loop = asyncio.get_running_loop()
     threading.Thread(target=hub.sample_resources, daemon=True).start()
@@ -1288,17 +1402,23 @@ async def main():
                     calls.append({**c, "srvKey": srv_key(c), "chKey": ch_key(c), "archived": hit})
             return respond(calls)
         if path == "/api/models":
-            return respond({"current": hub.model_id, "loading": hub.loading, "error": hub.model_error, "models": models_here()})
+            plan = model_plan()
+            return respond({"current": hub.model_id, "loading": hub.loading or hub.refine_loading, "error": hub.model_error,
+                            "selected": plan["selected"], "fallback": plan["fallback"], "refine": hub.refine_id,
+                            "models": [m for m in models_here() if not m.get("fallback") or plan["fallback"]]})
         if path == "/api/models/select":
             if request.headers.get("X-CT") != "1":
                 return respond({"error": "forbidden"}, status=403)
-            mid = params.get("id", "")
-            m = next((m for m in models_here() if m["id"] == mid and m["available"]), None)
-            if not m:
-                return respond({"error": "model not available on this machine"}, status=400)
-            hub.want = (m["id"], m["engine"], m["repo"])
-            save_settings(model=m["id"])
-            return respond({"ok": True, "loading": m["id"]})
+            ids = [x for x in params.get("ids", params.get("id", "")).split(",") if x]
+            avail = {m["id"]: m for m in models_here() if m["available"] and m["id"] in GRANITE}
+            if not ids or any(x not in avail for x in ids):
+                return respond({"error": "Choose Granite 470M, 2B or both (at least one)."}, status=400)
+            save_settings(models=[g for g in GRANITE if g in ids])
+            plan = model_plan()
+            hub.want = (plan["live"]["id"], plan["live"]["engine"], plan["live"]["repo"])
+            r = plan["refine"]
+            hub.want_refine = (r["id"], r["engine"], r["repo"]) if r else None
+            return respond({"ok": True, "selected": plan["selected"]})
         if path == "/api/plugins":
             return respond(list_plugins())
         if path == "/api/plugins/enable":

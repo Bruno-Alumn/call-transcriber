@@ -49,6 +49,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--engine", default="onnx")
     ap.add_argument("--switch-to", default=None, help="model id to switch to (live) before feeding audio")
+    ap.add_argument("--models", default=None, help="e.g. granite-470m,granite-2b: both on = 470M live + 2B rewrite")
     args = ap.parse_args()
     out = Path(tempfile.mkdtemp()) / "transcripts"
     env = dict(os.environ, PYTHONUTF8="1")
@@ -75,12 +76,28 @@ def main():
             else:
                 sys.exit("model switch never finished")
             print("now running:", st["modelId"], st["engine"], st["model"])
+        if args.models:
+            req = urllib.request.Request(f"http://127.0.0.1:{PORT}/api/models/select?ids={args.models}", headers={"X-CT": "1"})
+            print("models:", json.load(urllib.request.urlopen(req, timeout=10)))
+            for _ in range(900):
+                st = get("/api/state")
+                if st["modelReady"] and not st.get("refineLoading") and ("," not in args.models or st.get("refine")):
+                    break
+                time.sleep(1)
+            print("live:", st["modelId"], "| rewrite:", st.get("refine"))
         asyncio.run(feed())
         deadline = time.time() + 120
         lines = []
         while time.time() < deadline and len(lines) < len(SPEAKERS):
             lines = get(f"/api/day?d={time.strftime('%Y-%m-%d')}")
             time.sleep(1)
+        if args.models and "," in args.models:          # wait for the 2B rewrite pass
+            while time.time() < deadline and (get("/api/state").get("refineQueue") or 0) > 0:
+                time.sleep(1)
+            time.sleep(2)
+            lines = get(f"/api/day?d={time.strftime('%Y-%m-%d')}")
+            st = get("/api/state")
+            print("rewritten utterances:", st.get("refined"), "| refined lines:", sum(1 for l in lines if l.get("refined")))
         failures = []
         for uid, name, _, _, words in SPEAKERS:
             mine = [l for l in lines if l["speaker"] == name]
@@ -96,6 +113,19 @@ def main():
         calls = get("/api/calls")
         if not calls or calls[0].get("chName") != CHANNEL["name"]:
             failures.append("calls list missing the test channel")
+        if args.models and "," in args.models:
+            ids = [l.get("id") for l in lines]
+            if len(ids) != len(set(ids)):
+                failures.append("duplicate line ids")
+            raw = [json.loads(x) for f in out.glob("*.jsonl") for x in f.read_text().splitlines() if x.strip()]
+            gone = {x for r in raw for x in (r.get("replaces") or [])}
+            if any(l.get("id") in gone for l in lines):
+                failures.append("a replaced line is still shown")
+            md = "".join(f.read_text() for f in out.glob("*.md"))
+            md_lines = [x for x in md.splitlines() if x.startswith("**[")]
+            print("md lines:", len(md_lines), "| shown lines:", len(lines))
+            if len(md_lines) != len(lines):
+                failures.append(f"md has {len(md_lines)} lines but {len(lines)} are shown (replaced lines must not be written twice)")
         print("engine:", get("/api/state")["engine"])
         if failures:
             sys.exit("FAILED: " + "; ".join(failures))
