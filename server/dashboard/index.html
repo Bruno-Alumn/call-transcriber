@@ -244,6 +244,48 @@ svg text { fill: var(--text-muted); font-size: 11px; font-family: inherit; }
 .res .m .v { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
 .res .m .s { color: var(--text-muted); font-size: 11px; line-height: 1.35; }
 .res svg { display: block; width: 100%; height: 26px; margin-top: 4px; }
+/* ---------- compact mode: every panel on one screen, nothing scrolls but the transcript */
+body.compact .shell { grid-template-columns: 0 minmax(0, 1fr); }
+body.compact .side { visibility: hidden; }
+body.compact #toggle-side { display: none; }
+body.compact #toggle-compact { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+body.compact .app { gap: 10px; padding: 12px 14px 14px; }
+body.compact .kpis { gap: 8px; }
+body.compact .kpi { padding: 7px 12px; display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+body.compact .kpi .label { font-size: 11.5px; white-space: nowrap; }
+body.compact .kpi .value { font-size: 18px; margin: 0; white-space: nowrap; }
+body.compact .card h2, body.compact .res .m .v, body.compact .res .m .l { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+body.compact .c-tl .body { flex: 1; display: flex; align-items: flex-end; }
+body.compact .kpi .sub { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; font-size: 11px; }
+body.compact .main { grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 10px; }
+body.compact .col { display: grid; overflow: hidden; padding: 0; gap: 10px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-areas: "live res" "talk act" "words tl"; }
+body.compact .col .card { overflow: hidden; min-height: 0; }
+body.compact .c-live { grid-area: live; } body.compact .c-res { grid-area: res; } body.compact .c-talk { grid-area: talk; }
+body.compact .c-act { grid-area: act; } body.compact .c-tl { grid-area: tl; } body.compact .c-words { grid-area: words; }
+body.compact .card .head { padding: 9px 12px 5px; }
+body.compact .card .head .meta { font-size: 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
+body.compact .body { padding: 2px 12px 10px; min-height: 0; }
+body.compact .c-talk .body, body.compact .c-words .body { flex: 1; overflow: hidden;
+  -webkit-mask-image: linear-gradient(#000 calc(100% - 18px), transparent); mask-image: linear-gradient(#000 calc(100% - 18px), transparent); }
+body.compact .c-act .body { flex: 1; display: flex; }
+body.compact #act { height: 100%; min-height: 60px; }
+body.compact .now { padding: 0 12px 10px; gap: 6px; max-height: 72px; overflow: hidden; }
+body.compact .chip { padding: 3px 8px 3px 4px; font-size: 12px; }
+body.compact .res { gap: 6px; }
+body.compact .res .m { padding: 6px 8px; }
+body.compact .res .m .v { font-size: 15px; }
+body.compact .res .m .s { display: none; }
+body.compact .res svg { height: 18px; }
+body.compact .bars { gap: 5px; }
+body.compact .bar-row { grid-template-columns: minmax(0, 110px) 1fr auto; font-size: 12px; }
+body.compact .bar-row .num { white-space: nowrap; }
+body.compact .words { grid-template-columns: 1fr; gap: 2px; }
+body.compact .word { font-size: 12px; }
+body.compact .legend { padding: 0 12px 4px; font-size: 11px; flex-wrap: nowrap; overflow: hidden; }
+body.compact #feedmeta { display: none; }
+body.compact .c-tl .body { overflow: hidden; }
 @media (max-width: 900px) {
   html, body { overflow: auto; }
   .app { overflow: visible; }
@@ -270,6 +312,7 @@ svg text { fill: var(--text-muted); font-size: 11px; font-family: inherit; }
 <div class="app">
   <header>
     <button class="iconbtn" id="toggle-side" title="Show/hide calls (⌘\\)" aria-label="Show or hide the calls list">☰</button>
+    <button class="iconbtn" id="toggle-compact" title="Compact mode: everything on one screen (⌘⇧K / Ctrl+Shift+K)" aria-label="Compact mode" aria-pressed="false"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M2 2.75C2 2.34 2.34 2 2.75 2h4.5c.41 0 .75.34.75.75v10.5c0 .41-.34.75-.75.75h-4.5A.75.75 0 0 1 2 13.25V2.75Zm7 0c0-.41.34-.75.75-.75h3.5c.41 0 .75.34.75.75v3.5c0 .41-.34.75-.75.75h-3.5A.75.75 0 0 1 9 6.25v-3.5Zm0 6.5c0-.41.34-.75.75-.75h3.5c.41 0 .75.34.75.75v4c0 .41-.34.75-.75.75h-3.5a.75.75 0 0 1-.75-.75v-4Z"/></svg></button>
     <div class="brand" style="display:none">
       <svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5865f2"/><stop offset="1" stop-color="#3987e5"/></linearGradient></defs>
         <rect width="32" height="32" rx="9" fill="url(#g)"/>
@@ -302,30 +345,30 @@ svg text { fill: var(--text-muted); font-size: 11px; font-family: inherit; }
       <button class="jump" id="jump">↓ New lines</button>
     </div>
     <div class="col">
-      <div class="card">
+      <div class="card c-live">
         <div class="head"><h2>Live in Discord</h2><span class="meta" id="nowmeta"></span></div>
         <div class="now" id="now"><span class="empty" style="padding:4px 0">No one yet</span></div>
       </div>
-      <div class="card">
+      <div class="card c-res">
         <div class="head"><h2>Resources</h2><span class="meta">this Mac · updated every 2 s</span></div>
         <div class="body"><div class="res" id="res"></div></div>
       </div>
-      <div class="card">
+      <div class="card c-talk">
         <div class="head"><h2>Talk time</h2><span class="meta">click a name to filter</span></div>
         <div class="body"><div class="bars" id="bars"></div></div>
       </div>
-      <div class="card">
+      <div class="card c-act">
         <div class="head"><h2>Activity</h2>
           <div class="seg" id="act-range" style="margin-left:auto"><button data-r="60" class="on">Last hour</button><button data-r="0">Whole call</button></div>
         </div>
         <div class="legend" id="act-legend"></div>
         <div class="body" style="padding-top:0"><svg id="act" width="100%" height="150" role="img" aria-label="Talk time per time bucket, stacked by speaker"></svg></div>
       </div>
-      <div class="card">
+      <div class="card c-tl">
         <div class="head"><h2>Timeline</h2><span class="meta">last 10 minutes · hover for words</span></div>
         <div class="body" style="padding-top:0"><svg id="tl" width="100%" height="40" role="img" aria-label="Who spoke when"></svg></div>
       </div>
-      <div class="card">
+      <div class="card c-words">
         <div class="head"><h2>Most said</h2><span class="meta" id="wordmeta"></span></div>
         <div class="body"><div class="words" id="words"></div></div>
       </div>
@@ -349,6 +392,7 @@ const fmtDur = (s) => { s = Math.round(s); if (s < 60) return s + 's'; const m =
 const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
 const STOP = new Set(("a an the and or but if so to of in on at for with from by is are was were be been being am i you he she it we they me him her us them my your his its our their this that these those there here what which who whom whose when where why how not no yes yeah yep ok okay oh uh um like just do does did done have has had having get got go going gonna wanna can could would should will shall may might must im i'm you're it's that's don't dont can't cant didn't isn't i'll i've i'd we're they're let's lets he's she's we've they've you've i'd you'll we'll they'll there's here's who's how's isn't wasn't aren't won't wouldn't couldn't shouldn't doesn't haven't hasn't gonna all any some one two out up down over then than too very really right well also only even now about into just there's what's gotta kinda sort thing things know think mean see say said look want need make come take put give tell much more most many way back still dude bro man guys guy yo hey").split(' '));
 
+let compact = false;   // one-screen layout (see setCompact)
 let allLines = [], lines = [], names = {}, filter = null, query = '', liveState = null, range = 60;
 const GAP = 15 * 60000;   // 15 quiet minutes = a new call session
 const keyOf = new Map();        // record -> speaker key
@@ -474,7 +518,7 @@ const tip = $('#tip');
 function showTip(e, html) { tip.innerHTML = html; tip.style.display = 'block'; const x = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8); tip.style.left = x + 'px'; tip.style.top = (e.clientY + 14) + 'px'; }
 function hideTip() { tip.style.display = 'none'; }
 function renderActivity(s) {
-  const svg = $('#act'); const W = svg.clientWidth || 400, H = 150, padL = 50, padB = 20, padT = 6;
+  const svg = $('#act'); const W = svg.clientWidth || 400, H = compact && svg.clientHeight > 40 ? svg.clientHeight : 150, padL = 50, padB = 20, padT = 6;
   if (!lines.length) { svg.innerHTML = ''; $('#act-legend').innerHTML = ''; return; }
   const endT = isToday() ? Math.max(Date.now(), lines[lines.length - 1].end) : lines[lines.length - 1].end;
   const startT = range && endT - lines[0].t > range * 60000 ? endT - range * 60000 : lines[0].t;   // short calls: whole call
@@ -513,7 +557,7 @@ function renderActivity(s) {
     });
     out += `<rect class="hit" data-i="${i}" x="${padL + i * bw}" y="${padT}" width="${bw}" height="${H - padT - padB}" fill="transparent"/>`;
   });
-  const ticks = Math.min(6, nb);
+  const ticks = Math.max(2, Math.min(6, nb, Math.floor((W - padL) / 70)));   // ~70px per time label: never overlap
   for (let t = 0; t < ticks; t++) { const i = Math.round(t * (nb - 1) / Math.max(1, ticks - 1)); const anchor = t === 0 ? 'start' : t === ticks - 1 ? 'end' : 'middle'; const xx = anchor === 'start' ? padL + i * bw : anchor === 'end' ? padL + (i + 1) * bw : padL + i * bw + bw / 2; out += `<text x="${xx}" y="${H - 5}" text-anchor="${anchor}">${fmtHM(b0 + i * bms)}</text>`; }
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.innerHTML = out;
   svg.querySelectorAll('.hit').forEach((el) => {
@@ -534,7 +578,9 @@ function renderTimeline(s) {
   const startT = endT - 10 * 60000;
   const recent = lines.filter((r) => r.end > startT);
   const keys = [...new Set(recent.map((r) => keyOf.get(r)))].sort((a, b) => colorIndex.get(a) - colorIndex.get(b));
-  const lane = 18, padL = 110, padB = 18, H = Math.max(40, keys.length * lane + padB + 4);
+  // compact mode: lanes shrink so the chart always fits its slot
+  const room = compact ? Math.max(48, svg.parentElement.clientHeight - 14) : Infinity;   // fill the panel, no taller
+  const lane = Math.max(compact ? 9 : 7, Math.min(compact ? 26 : 18, Math.floor((room - 22) / Math.max(1, keys.length)))), padL = 110, padB = 18, H = Math.max(40, keys.length * lane + padB + 4);
   svg.setAttribute('height', H); svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   if (!keys.length) { svg.innerHTML = `<text x="${W / 2}" y="22" text-anchor="middle">Nobody has spoken in the last 10 minutes</text>`; return; }
   const x = (t) => padL + (W - padL - 4) * (t - startT) / (endT - startT);
@@ -548,7 +594,8 @@ function renderTimeline(s) {
     const x0 = Math.max(padL, x(r.t)), x1 = Math.max(x0 + 3, x(r.end));
     out += `<rect class="u" data-i="${idx}" x="${x0}" y="${yy}" width="${x1 - x0}" height="12" rx="4" fill="${colorFor(keyOf.get(r))}" ${filter && filter !== keyOf.get(r) ? 'opacity=".25"' : ''}/>`;
   });
-  for (let m = 0; m <= 10; m += 2) out += `<text x="${x(startT + m * 60000)}" y="${H - 4}" text-anchor="${m === 10 ? 'end' : 'middle'}">${m === 10 ? 'now' : '−' + (10 - m) + ' min'}</text>`;
+  const step = W - padL < 260 ? 5 : 2;      // fewer labels when narrow, so they never overlap
+  for (let m = 0; m <= 10; m += step) out += `<text x="${x(startT + m * 60000)}" y="${H - 4}" text-anchor="${m === 10 ? 'end' : 'middle'}">${m === 10 ? 'now' : '−' + (10 - m) + ' min'}</text>`;
   svg.innerHTML = out;
   svg.querySelectorAll('.u').forEach((el) => {
     el.onmousemove = (e) => { const r = recent[+el.dataset.i]; showTip(e, `<div class="t">${fmtTime(r.t)} · ${esc(nameFor(keyOf.get(r)))}</div>${esc(r.text)}`); };
@@ -1089,6 +1136,18 @@ $('#copy').onclick = async () => {
 };
 const toggleSide = () => { $('#shell').classList.toggle('collapsed'); setTimeout(() => { const s = stats(); renderActivity(s); renderTimeline(s); }, 50); };
 $('#toggle-side').onclick = toggleSide;
+// Compact mode (remembered per browser/app)
+try { compact = localStorage.getItem('ct-compact') === '1'; } catch {}
+function setCompact(on) {
+  compact = !!on;
+  document.body.classList.toggle('compact', compact);
+  $('#toggle-compact').setAttribute('aria-pressed', String(compact));
+  try { localStorage.setItem('ct-compact', compact ? '1' : '0'); } catch {}
+  requestAnimationFrame(() => { const s = stats(); renderActivity(s); renderTimeline(s); });
+}
+$('#toggle-compact').onclick = () => setCompact(!compact);
+addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'k') { e.preventDefault(); setCompact(!compact); } });
+setCompact(compact);
 addEventListener('keydown', (e) => { if (e.metaKey && e.key === '\\') toggleSide(); if (e.metaKey && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); $('#hq').focus(); } });
 
 let ws, backoff = 500, callsTimer;

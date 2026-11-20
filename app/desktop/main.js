@@ -385,6 +385,7 @@ function buildMenu() {
   t.push({ label: 'View', submenu: [
     { label: 'Reload Dashboard', accelerator: 'CmdOrCtrl+R', click: () => (server ? showDashboard() : splash('The server is stopped. Nothing is being transcribed.', { offerStart: true })) },
     { label: 'Show/Hide Calls List', accelerator: 'CmdOrCtrl+\\', click: js("document.getElementById('toggle-side')?.click()") },
+    { label: 'Compact Mode (everything on one screen)', accelerator: 'CmdOrCtrl+Shift+K', click: js("document.getElementById('toggle-compact')?.click()") },
     { label: 'Search All Calls…', accelerator: 'CmdOrCtrl+Shift+F', click: js("(()=>{const s=document.getElementById('shell');s?.classList.remove('collapsed');document.getElementById('hq')?.focus()})()") },
     { label: 'Find in Transcript…', accelerator: 'CmdOrCtrl+F', click: js("document.getElementById('q')?.focus()") },
     { type: 'separator' },

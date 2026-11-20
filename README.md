@@ -39,6 +39,8 @@ transcript. No Chrome or extension needed.
 - **Discord window:** the real Discord web app (your account). Closing it
   hides it and keeps you in the call; the **Discord** button or ⌘D / Ctrl+D
   brings it back. Discord ▸ Pause Transcribing pauses.
+- **Compact mode** (the layout button left of the call name, or ⌘⇧K / Ctrl+Shift+K):
+  live transcript plus every analytics panel on one screen, no scrolling.
 - Closing the dashboard keeps transcribing; Quit (⌘Q, or the Windows tray
   icon) stops it. The app starts and stops the server itself.
 - Dashboard also at http://127.0.0.1:8765/.
