@@ -203,33 +203,32 @@ def _people_csv(people_features: dict, scores: dict, cis: dict,
                    key=lambda u: -_num((people_features.get(u) or {}).get("words")) if _finite(
                        (people_features.get(u) or {}).get("words")) else 0)
     f = io.StringIO()
-    if True:
-        w = csv.writer(f)
-        w.writerow(header)
-        for u in users:
-            feats = people_features.get(u) or {}
-            sc = scores.get(u) or {}
-            ci = (cis or {}).get(u) or {}
-            flags = []
-            if _finite(feats.get("calls")) and _num(feats.get("calls")) < FEW_CALLS:
-                flags.append("few_calls")
-            share = labelled_share.get(u)
-            if share is not None and _finite(share) and _num(share) < FEW_LABELS_SHARE:
-                flags.append("few_labels")
-            for t in TRAITS:
-                lo_hi = ci.get(t)
-                if lo_hi and len(lo_hi) == 2 and _finite(lo_hi[0]) and _finite(lo_hi[1]) \
-                        and _num(lo_hi[1]) - _num(lo_hi[0]) > WIDE_CI:
-                    flags.append("wide_ci")
-                    break
-            row = [u, names.get(u, ""),
-                   _fmt(feats.get("words"), 0), _fmt(feats.get("lines"), 0), _fmt(feats.get("calls"), 0),
-                   _fmt(_num(feats.get("talk_s")) / 60, 1), roles.get(u, ""), degree.get(u, "")]
-            for t in TRAITS:
-                lo_hi = ci.get(t) or (None, None)
-                row += [_fmt(sc.get(t)), _fmt(lo_hi[0]), _fmt(lo_hi[1])]
-            row.append(";".join(flags))
-            w.writerow(row)
+    w = csv.writer(f)
+    w.writerow(header)
+    for u in users:
+        feats = people_features.get(u) or {}
+        sc = scores.get(u) or {}
+        ci = (cis or {}).get(u) or {}
+        flags = []
+        if _finite(feats.get("calls")) and _num(feats.get("calls")) < FEW_CALLS:
+            flags.append("few_calls")
+        share = labelled_share.get(u)
+        if share is not None and _finite(share) and _num(share) < FEW_LABELS_SHARE:
+            flags.append("few_labels")
+        for t in TRAITS:
+            lo_hi = ci.get(t)
+            if lo_hi and len(lo_hi) == 2 and _finite(lo_hi[0]) and _finite(lo_hi[1]) \
+                    and _num(lo_hi[1]) - _num(lo_hi[0]) > WIDE_CI:
+                flags.append("wide_ci")
+                break
+        row = [u, names.get(u, ""),
+               _fmt(feats.get("words"), 0), _fmt(feats.get("lines"), 0), _fmt(feats.get("calls"), 0),
+               _fmt(_num(feats.get("talk_s")) / 60, 1), roles.get(u, ""), degree.get(u, "")]
+        for t in TRAITS:
+            lo_hi = ci.get(t) or (None, None)
+            row += [_fmt(sc.get(t)), _fmt(lo_hi[0]), _fmt(lo_hi[1])]
+        row.append(";".join(flags))
+        w.writerow(row)
     return f.getvalue()
 
 
@@ -320,8 +319,8 @@ def _report_md(guild_name: str, settings: dict, label_stats: dict, reliability: 
             f"{s.get('people_below_min', '-')}")
     if s.get("excluded_listed"):
         add(f"- Exclusion list: {s['excluded_listed']} id(s); {s.get('excluded_count', 0)} of them spoke in "
-            "this server and date range, and all their lines were removed before any analysis (they appear "
-            "nowhere in these outputs and were never shown to the labelling model).")
+            "this server and date range, and all their lines were removed before any analysis in this run (they "
+            "appear nowhere in these outputs and were not shown to the labelling model in this run).")
         if s.get("excluded_unmatched"):
             add(f"  {s['excluded_unmatched']} id(s) on the list matched no line here (they may not have spoken "
                 "in this period, or the id may be wrong: check it is a user id).")
@@ -410,18 +409,18 @@ def _report_md(guild_name: str, settings: dict, label_stats: dict, reliability: 
             "between predicted and self-reported scores (each person predicted by a model fitted "
             "without them):")
         add("")
-        add("| trait | answers | leave-one-out r | 95% range | chance level (95th pct) | p |")
-        add("|---|---|---|---|---|---|")
+        add("| trait | answers | leave-one-out r | chance level (95th pct) | p |")
+        add("|---|---|---|---|---|")
         for t in TRAITS:
-            ci = (cal.get("loo_ci") or {}).get(t) or (None, None)
             add(f"| {t} | {(cal.get('n_by_trait') or {}).get(t, '-')} | {_fmt((cal.get('loo_r') or {}).get(t))} | "
-                f"{_fmt(ci[0])} to {_fmt(ci[1])} | {_fmt((cal.get('loo_null95') or {}).get(t))} | "
-                f"{_fmt((cal.get('loo_p') or {}).get(t))} |")
+                f"{_fmt((cal.get('loo_null95') or {}).get(t))} | {_fmt((cal.get('loo_p') or {}).get(t))} |")
         add("")
         add("The chance level is what the same procedure gives when the questionnaire answers are shuffled "
             "between people: with few questionnaires and many features, values of 0.3-0.6 happen by luck. "
             "A leave-one-out r below the chance level (or p above 0.05) means the calibrated scores for that "
-            "trait are no better than chance. With only a handful of questionnaires this is common."
+            "trait are no better than chance. With only a handful of questionnaires this is common. "
+            "Leave-one-out r can also come out clearly negative when there is no real signal (each person "
+            "is predicted from the others' average), so judge by p, not by the sign of r."
             + (f" Ridge penalty: {cal.get('alpha')}." if cal.get("alpha") is not None else ""))
         add("")
 

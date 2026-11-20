@@ -174,7 +174,7 @@ def fit_calibration(people, truth: dict[str, dict[str, float]], feats, alpha=1.0
     # ridge regression per trait (numpy closed form on z-scored features), leave-one-out predictions,
     # returns {"weights": {trait: {feat: w}}, "intercept": {...}, "loo_r": {trait: r}, "n": int,
     # "loo_null95"/"loo_p": permutation chance level of loo_r, "loo_ci": Fisher 95% interval, ...}.
-    # The CLI passes alpha=CLI_ALPHA (50, fixed, not tuned on the reported LOO r).
+    # The CLI passes alpha=CLI_ALPHA (1.0, fixed; larger values gave no power and biased LOO r downward).
     # Refuse (raise ValueError) with fewer than 8 users that have both features and truth.
 def load_questionnaire(path) -> dict[str, dict[str, float]]
     # CSV with header user,openness,conscientiousness,extraversion,agreeableness,neuroticism (any order, 1-5 or 0-100 scale).

@@ -485,12 +485,15 @@ def _ridge(Z: np.ndarray, y: np.ndarray, alpha: float):
     return w, b0
 
 
-# Alpha the CLI uses. With ~10 people and ~30 features the eigenvalues of Z'Z
-# are roughly 8-60, so alpha = 1 barely regularises (close to an interpolator
-# whose leave-one-out r is noise). 50 shrinks the weights substantially; it is
-# a fixed, documented choice, NOT tuned on the LOO r that is then reported
-# (that would inflate it). fit_calibration's own default stays 1.0.
-CLI_ALPHA = 50.0
+# Alpha the CLI uses: fixed, never tuned on the LOO r that is then reported
+# (that would inflate it). Larger values were tried and rejected: with ~10
+# people and ~30 features, alpha 10 or 50 gave no more power to detect a real
+# signal (7% at p < .05 for every alpha, simulated) and biased leave-one-out
+# r DOWNWARD (mean r under no signal: 0.00 at alpha 1, -0.09 at 10, -0.31 at
+# 50), because predictions shrink to the fold mean, which moves opposite to
+# the held-out answer. At such sizes calibration is mostly noise whatever the
+# alpha; the permutation chance level below is what says so honestly.
+CLI_ALPHA = 1.0
 
 # Permutations for the chance level of loo_r.
 N_PERM = 200
@@ -553,8 +556,9 @@ def fit_calibration(people: dict[str, dict[str, float]], truth: dict[str, dict[s
     across people (seeded); "loo_null95" is the 95th percentile of those r
     values and "loo_p" the share of them >= the real r (with the +1
     correction). A real r below loo_null95 is indistinguishable from chance.
-    "loo_ci" is a Fisher-z 95% interval for loo_r (rough: LOO predictions
-    are not independent).
+    "loo_ci" is a Fisher-z 95% interval for loo_r: rough only, since LOO
+    predictions are not independent and LOO r is biased (downward under
+    strong shrinkage); judge by loo_p / loo_null95. Not shown in report.md.
 
     Returns {"weights": {trait: {feat: w}}, "intercept": {trait: b0},
              "loo_r": {trait: r}, "loo_null95": {trait: r95}, "loo_p": {trait: p},

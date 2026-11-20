@@ -590,6 +590,36 @@ def main() -> int:
             problems.append(f"segmented turn -> {data.replies(seg)}")
         return not problems, "; ".join(problems)
 
+    @check("a generation that raises is not cached and is retried on the next run")
+    def _():
+        labels = mod("labels")
+        lines = pipe["lines"][:3]
+
+        class Flaky(labels._LLMLabeller):
+            name = "flaky:test"
+            calls = 0
+
+            def _generate(self, messages):
+                Flaky.calls += 1
+                if Flaky.calls == 1:
+                    raise RuntimeError("[metal] out of memory (transient)")
+                return '{"sentiment": "neutral", "act": "statement", "emotion": "none", "tone": "neutral", "context": "other"}'
+
+        import contextlib, io
+        cache = labels.LabelCache(tmp / "flaky_cache")
+        with contextlib.redirect_stderr(io.StringIO()):
+            r1 = labels.label_lines(lines, Flaky(), cache)
+        k0 = lines[0].key
+        problems = []
+        if k0 in r1:
+            problems.append("failed line in the result")
+        if labels.LabelCache(tmp / "flaky_cache").has(k0, Flaky.name):
+            problems.append("failed line cached")
+        r2 = labels.label_lines(lines, Flaky(), labels.LabelCache(tmp / "flaky_cache"))
+        if not isinstance(r2.get(k0), dict):
+            problems.append("not retried on the next run")
+        return not problems, "; ".join(problems)
+
     failed = [n for n, ok, _ in RESULTS if not ok]
     print(f"\n{len(RESULTS) - len(failed)}/{len(RESULTS)} checks passed; output kept in {tmp}")
     return 1 if failed else 0

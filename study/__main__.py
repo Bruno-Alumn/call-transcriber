@@ -98,11 +98,10 @@ def _no_lines_message(transcripts: Path, guild: str, since, until) -> str:
 
 
 def _write_atomic(path: Path, text: str, encoding: str = "utf-8") -> None:
-    """Write via a temp file and os.replace, so a failed write never leaves half a file."""
-    tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w", encoding=encoding, newline="") as f:
-        f.write(text)
-    os.replace(tmp, path)
+    """Write via a temp file and os.replace, so a failed write never leaves half a file
+    (the temp file is removed on failure). Shared with report.py."""
+    from study.report import _write_atomic as write
+    write(path, text, encoding)
 
 
 # ------------------------------------------------------------------- guilds
@@ -271,7 +270,13 @@ def cmd_run(args) -> int:
 
     # 2. Bring earlier outputs in line with the exclusion list (cache, hand-label sheet).
     if exclude:
-        sc = _scrub_for_exclusion(out, transcripts, args.guild, exclude)
+        try:
+            sc = _scrub_for_exclusion(out, transcripts, args.guild, exclude)
+        except OSError as e:
+            print(f"study: cannot update {getattr(e, 'filename', None) or out} for the exclusion list "
+                  f"({e.strerror or e}); is it open in another program? Nothing was run; close it and rerun.",
+                  file=sys.stderr)
+            return 1
         if sc["cache_rows"]:
             print(f"Removed {sc['cache_rows']} cached labels of excluded people or deleted lines.", flush=True)
         if sc["sample_rows"] or sc["sample_previous"]:
@@ -463,11 +468,20 @@ def cmd_sample(args) -> int:
     labels = _cached_labels(out / "labels.jsonl")
     if not labels:
         sys.exit(f"study: no labels in {out / 'labels.jsonl'}; run `python -m study run` first.")
-    lines = load_lines(Path(args.transcripts), args.guild, args.since, args.until, exclude)
+    load_stats: dict = {}
+    lines = load_lines(Path(args.transcripts), args.guild, args.since, args.until, exclude, stats=load_stats)
+    unmatched = sorted(u for u, n in load_stats.get("excluded_lines", {}).items() if n == 0)
+    if unmatched:
+        print(f"study: WARNING: {len(unmatched)} id(s) on the exclusion list matched no line of this server "
+              f"in this date range: {', '.join(unmatched[:10])}. Check they are user ids.",
+              file=sys.stderr, flush=True)
     group_calls(lines)   # so the sheet's "previous line" stays within one call
     lines = [ln for ln in lines if ln.key in labels]
     sheet = out / "sample.csv"
-    n = export_sample(lines, {ln.key: labels[ln.key] for ln in lines}, sheet, n=args.n, seed=0)
+    try:
+        n = export_sample(lines, {ln.key: labels[ln.key] for ln in lines}, sheet, n=args.n, seed=0)
+    except OSError as e:
+        sys.exit(f"study: cannot write {sheet} ({e.strerror or e}); is it open in another program?")
     print(f"Wrote {n} rows to {sheet}. Fill in the human_* columns, then run:\n"
           f"  python -m study agree --sheet {sheet}")
     return 0
