@@ -34,7 +34,7 @@ if (location.search.includes('nowl=1')) AudioWorklet.prototype.addModule = () =>
   UserStoreC.displayName = 'UserStore';
   class MemberStoreC extends Store { getNick(g, id) { return g === '900000000000000001' && id === '333333333333333333' ? 'Carol K (nick)' : null; } getMember() { return null; } }
   MemberStoreC.displayName = 'GuildMemberStore';
-  class VoiceStoreC extends Store { getAllVoiceStates() { return { '900000000000000001': { '333333333333333333': {}, '444444444444444444': {} } }; } }
+  class VoiceStoreC extends Store { getVoiceStatesForChannel(ch) { return Object.fromEntries((window.__present?.[ch] || []).map((id) => [id, { userId: id, channelId: ch }])); } getAllVoiceStates() { return { '900000000000000001': { '333333333333333333': {}, '444444444444444444': {} } }; } }
   VoiceStoreC.displayName = 'VoiceStateStore';
   window.__fakeChannel = '700000000000000001';
   const chans = { '700000000000000001': { id: '700000000000000001', name: 'Voice 4', guild_id: '900000000000000001' },
@@ -109,6 +109,7 @@ document.getElementById('join').onclick = () => (async () => {
   addSpeaker('bob', b, 2.0, '222222222222222222-1002');
   addSpeaker('carol', c3, 2.5, '333333333333333333-1003');
   await negotiate();
+  window.__present = { '700000000000000001': ['111111111111111111', '222222222222222222', '333333333333333333'] };
   window.__harness = { status: 'phase1' };
   // Phase 2: you move to another voice channel; Dave talks there.
   await wait(9000);
@@ -117,11 +118,13 @@ document.getElementById('join').onclick = () => (async () => {
   pc1.removeTrack(senders.bob);
   addSpeaker('dave', d, 0.5, '444444444444444444-1004');
   await negotiate();
+  window.__present = { '700000000000000002': ['444444444444444444'] };
   window.__harness = { status: 'phase2' };
   // Phase 3: Bob rejoins with a new ssrc and talks again.
   await wait(6000);
   addSpeaker('bob2', b2, 0.5, '222222222222222222-1005');
   await negotiate();
+  window.__present = { '700000000000000002': ['444444444444444444', '222222222222222222'] };
   window.__harness = { status: 'phase3' };
   const ids = Object.values(rename);
   window.__harness = { status: 'playing', ids };

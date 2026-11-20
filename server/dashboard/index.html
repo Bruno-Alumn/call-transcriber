@@ -1239,14 +1239,26 @@ function persFields(text) {
   const grab = (re) => (text.match(re)?.[1] || '').replace(/\*\*/g, '').trim();
   return { sentence: grab(/in a sentence:\**\s*(.+)/i), traits: grab(/comes across as:\**\s*(.+)/i) };
 }
+// Who the overview covers: the top talkers among people still in the call (live),
+// or simply the top talkers (past calls). Someone who leaves drops out and the next person moves up.
+function persCandidates() {
+  const per = stats().per.filter((p) => p.words >= 30);
+  const c = currentCall();
+  if (!c || !isLiveCall(c)) return per.slice(0, 3);
+  const present = new Set(liveState?.ext?.present || []);
+  if (present.size) return per.filter((p) => present.has(p.k)).slice(0, 3);
+  const recent = Date.now() - 10 * 60000;                 // older hook: people heard in the last 10 minutes
+  const last = new Map(); for (const r of lines) last.set(keyOf.get(r), Math.max(last.get(keyOf.get(r)) || 0, r.end));
+  return per.filter((p) => (last.get(p.k) || 0) > recent).slice(0, 3);
+}
 function renderPers() {
   const box = $('#pers'); if (!box) return;
   if (personaInfo && !personaInfo.available) { box.innerHTML = `<div class="pers-empty">${esc(personaInfo.reason || 'Not available on this computer.')}</div>`; return; }
-  const top = stats().per.filter((p) => p.words >= 30).slice(0, 3);
+  const top = persCandidates();
   if (!top.length) { box.innerHTML = '<div class="pers-empty">Appears once people have talked for a bit.</div>'; return; }
   box.innerHTML = top.map((p) => {
     const o = persOverview.get(p.k);
-    const body = o?.sentence ? `<div class="ps">${esc(o.sentence)}</div>${o.traits ? `<div class="pt">${esc(o.traits)}</div>` : ''}`
+    const body = o?.sentence ? `<div class="ps">${esc(o.sentence)}</div><div class="pt">${esc(o.traits || '')}${o.at ? ` · ${ago(o.at)}` : ''}</div>`
       : `<div class="pt">${o?.status === 'error' ? 'Couldn\'t read this one.' : o ? 'Reading…' : 'Waiting…'}</div>`;
     return `<button class="pp" data-k="${esc(p.k)}" title="Open the full read"><span class="pn"><span class="swatch" style="background:${colorFor(p.k)}"></span>${esc(nameFor(p.k))}</span>${body}</button>`;
   }).join('');
@@ -1259,7 +1271,7 @@ async function refreshPers() {
   if (persCallId !== c.id) { persOverview.clear(); persCallId = c.id; }
   persBusy = true;
   try {
-    for (const p of stats().per.filter((x) => x.words >= 30).slice(0, 3)) {
+    for (const p of persCandidates()) {
       const user = /^\d{15,22}$/.test(p.k) ? p.k : '';
       const q = new URLSearchParams({ day: c.day, from: c.start, to: c.end, ch: c.ch || '', user, name: user ? nameFor(p.k) : String(p.k).replace(/^name:/, '') });
       const r = await fetch('/api/persona/start?' + q, { method: 'POST', headers: { 'X-CT': '1' } }).then((x) => x.json()).catch(() => null);
@@ -1268,7 +1280,7 @@ async function refreshPers() {
       for (let i = 0; i < 300; i++) {
         const j = await fetch('/api/persona?id=' + r.id).then((x) => x.json()).catch(() => null);
         if (!j) break;
-        if (j.status === 'done') { persOverview.set(p.k, { status: 'done', ...persFields(j.text) }); break; }
+        if (j.status === 'done') { persOverview.set(p.k, { status: 'done', at: j.started * 1000, ...persFields(j.text) }); break; }
         if (j.status === 'error') { if (!persOverview.get(p.k)?.sentence) persOverview.set(p.k, { status: 'error' }); break; }
         await new Promise((res) => setTimeout(res, 1000));
       }
@@ -1277,6 +1289,7 @@ async function refreshPers() {
   } finally { persBusy = false; renderPers(); }
 }
 setInterval(refreshPers, 30000);
+setInterval(() => { if (compact && !SHARE) renderPers(); }, 5000);   // follow joins/leaves between reads
 function confirmBox(title, body, note, okLabel) {
   return new Promise((resolve) => {
     const bg = $('#modal'), box = bg.firstElementChild;
@@ -1354,7 +1367,7 @@ $('#hq').oninput = () => {
   }, 200);
 };
 
-function renderAll() { rebuildKeys(); const s = stats(); renderKPIs(s); renderBars(s); renderActivity(s); renderTimeline(s); renderWords(); renderFeed(); renderState(); }
+function renderAll() { rebuildKeys(); const s = stats(); renderKPIs(s); renderBars(s); renderActivity(s); renderTimeline(s); renderWords(); renderFeed(); renderState(); if (compact) renderPers(); }
 let qTimer; $('#q').oninput = () => { clearTimeout(qTimer); qTimer = setTimeout(() => { query = $('#q').value.trim(); renderFeed(); }, 120); };
 $('#copy').onclick = async () => {
   const c = currentCall(); if (!c) return;

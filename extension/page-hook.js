@@ -7,7 +7,7 @@
 // chunks tagged with the user id + display name to content.js.
 (() => {
   if (window.__dtHook) return;
-  window.__dtHook = { version: 10, tracks: 0, chunks: 0, errors: [], loadedAt: document.readyState, pcs: 0, badStreamIds: [] };
+  window.__dtHook = { version: 11, tracks: 0, chunks: 0, errors: [], loadedAt: document.readyState, pcs: 0, badStreamIds: [] };
   const H = window.__dtHook;
   const pcs = new Set();
   const ssrcUser = new Map();           // voice gateway op 5: ssrc -> user id
@@ -103,6 +103,18 @@
   }
   // The voice channel this tab is connected to: {id, name, guild, guildName}.
   let channel = null, channelAt = 0;
+  // Who is in the voice channel right now (Discord's own voice states), not counting you.
+  function inChannelIds() {
+    const st = findStores(), ch = channel?.id;
+    if (!st || !ch) return null;
+    try {
+      const me = st.user.getCurrentUser()?.id;
+      let vs = st.voice?.getVoiceStatesForChannel?.(ch);
+      if (!vs) return null;
+      const ids = vs instanceof Map ? [...vs.keys()] : Array.isArray(vs) ? vs.map((v) => v?.userId) : Object.keys(vs);
+      return ids.filter((id) => typeof id === 'string' && /^\d{15,22}$/.test(id) && id !== me);
+    } catch (e) { H.storeDiag.presErr = String(e).slice(0, 80); return null; }
+  }
   function currentChannel() {
     if (Date.now() - channelAt < 2000) return channel;
     channelAt = Date.now();
@@ -342,7 +354,7 @@
       v: H.version, loadedAt: H.loadedAt, pcs: H.pcs, tracks: H.tracks, capture: H.capture,
       activeTracks: [...readers.values()].filter((r) => r.isActive?.()).length,
       silent: H.silent || 0, loudMax: +(H.loudMax || 0).toFixed(3), ctxRate: ctx?.sampleRate, ctxBase: ctx ? +(ctx.baseLatency || 0).toFixed(3) : null, frames: H.frames || 0, chunks: H.chunks,
-      ctx: ctx ? ctx.state : 'none', enabled, live: H.live, names: H.names, nameVia: H.nameVia,
+      ctx: ctx ? ctx.state : 'none', enabled, live: H.live, liveIds: inChannelIds() ?? [...new Set([...readers.values()].map((r) => r.userId).filter(Boolean))], names: H.names, nameVia: H.nameVia,
       badStreamIds: H.badStreamIds, errors: [...new Set(H.errors)].slice(-5),
       storeDiag: H.storeDiag, unnamedRows: H.unnamedRows, channel: currentChannel(),
       unnamedLive: [...readers.values()].filter((r) => r.userId && !idName.has(r.userId)).map((r) => r.userId),

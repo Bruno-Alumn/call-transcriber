@@ -450,6 +450,7 @@ class Hub:
                "named": sum(1 for n in (st.get("live") or []) if not re.fullmatch(r"\d{15,22}", str(n))),
                "audio": st.get("ctx"), "hook": st.get("v"), "errors": st.get("errors") or [],
                "channel": st.get("channel") if age < 15 else None,
+               "present": (st.get("liveIds") or []) if age < 15 else [],   # user ids in the voice call now
                "client": st.get("client") or "chrome",           # "app": Discord inside the desktop app
                "lastReport": int(at * 1000) if at else None}
         return {"type": "state", "model": self.model, "engine": getattr(self, "engine", None), "modelReady": self.model_ready,
@@ -742,10 +743,11 @@ class PersonalityReader:
                 break
             picked.append(x)
         picked.reverse()
-        # Reuse a recent read of the same person in the same call unless they've said a lot more since.
+        # Reuse the last read of this person in this call; redo it every 10 minutes while they keep talking.
         ck = (day, t0, ch, user or name)
         hit = self.cache.get(ck)
-        if hit and not fresh and words - hit[0] < 150:
+        stale = hit and time.time() - self.jobs.get(hit[1], {}).get("started", 0) >= 600 and words - hit[0] >= 20
+        if hit and not fresh and not stale:
             old = self.jobs.get(hit[1])
             if old and old["status"] in ("loading", "thinking", "done"):
                 return {"id": old["id"], **{k: old[k] for k in ("status", "lines", "words")}, "cached": True}

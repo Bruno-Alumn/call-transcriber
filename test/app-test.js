@@ -78,6 +78,8 @@ const fail = (msg) => { console.log('FAIL', msg); process.exitCode = 1; };
   const state = await new Promise((r) => http.get(`http://127.0.0.1:${PORT}/api/state`, (res) => { let b = ''; res.on('data', (d) => (b += d)); res.on('end', () => r(JSON.parse(b))); }));
   console.log('SERVER EXT', JSON.stringify(state.ext));
   if (!state.ext.connected || state.ext.client !== 'app') fail('server does not see the app as connected');
+  console.log('PRESENT (from Discord voice states):', JSON.stringify(state.ext.present));
+  if (!(state.ext.present || []).length) fail('server does not know who is in the call');
   await sleep(Math.max(0, 32000 - (Date.now() - t0)));
   // Screen share: Discord asks for a screen; the app hands it the shared compact view.
   await discord.click('#share');
