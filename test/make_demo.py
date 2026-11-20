@@ -1,17 +1,28 @@
 # Writes a fictional demo call (people, servers and words are made up) for
-# screenshots and tests:  python test/make_demo.py <transcripts-dir>
-# --people N (7-30): the weekly sync becomes a big call of N people instead of 6,
-# to check that the dashboard gives everyone a colour and shows every name.
+# screenshots and tests:  python test/make_demo.py <transcripts-dir> [--people N]
+# --people N (7-30, before or after the folder): the weekly sync becomes a big
+# call of N people instead of 6, to check that the dashboard gives everyone a
+# colour and shows every name.
 import json, random, time, datetime, sys
 random.seed(7)
-out = sys.argv[1]
+args = sys.argv[1:]
+crowd = 0
+if "--people" in args:
+    i = args.index("--people")
+    crowd = int(args[i + 1])
+    del args[i:i + 2]
+if len(args) != 1:
+    sys.exit("usage: make_demo.py <transcripts-dir> [--people N]")
+out = args[0]
 now = int(time.time() * 1000)
 people = [("100000000000000001","Maya"),("100000000000000002","Jonas"),("100000000000000003","Priya"),("100000000000000004","Theo"),("100000000000000005","Ines"),("100000000000000006","Sam")]
-crowd = int(sys.argv[sys.argv.index("--people") + 1]) if "--people" in sys.argv else 0
 if crowd:
     more = ["Aurelio","Bea","Chidi","Dagny","Emeka","Farah","Gunnar","Hana","Ivo","Jun","Kalani","Lior",
             "Mireille","Nadia","Oskar","Pita","Quinn","Rosalind Featherstonehaugh","Søren","Tomás","Ulla","Valentina","Wen","Xavi"]
-    crowd = max(len(people) + 1, min(crowd, len(people) + len(more)))
+    size = max(len(people) + 1, min(crowd, len(people) + len(more)))
+    if size != crowd:
+        print(f"--people {crowd}: using {size} (this demo has 7-30 people)", file=sys.stderr)
+    crowd = size
     people = people + [(str(100000000000000007 + i), n) for i, n in enumerate(more[:crowd - 6])]
 lines = [
  "Okay, are we recording? Cool, let's start with the release plan.",

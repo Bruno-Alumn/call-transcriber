@@ -583,8 +583,7 @@ if (SHARE) document.documentElement.classList.add('share');
 let allLines = [], lines = [], names = {}, filter = null, query = '', liveState = null, range = 60;
 const GAP = 15 * 60000;   // 15 quiet minutes = a new call session
 const keyOf = new Map();        // record -> speaker key
-const colorIndex = new Map();   // key -> colour number (first-appearance order, kept for the whole call)
-let colorCall = null;           // the call colorIndex belongs to
+const colorIndex = new Map();   // key -> colour number (order of first line in the call)
 const latestName = new Map();   // key -> most recent display name
 
 function speakerKey(r, uidBySuffix, nameToUid) {
@@ -602,11 +601,14 @@ function rebuildKeys() {
   const nameToUid = new Map(Object.entries(names).map(([uid, n]) => [n, uid]));
   for (const r of allLines) if (r.user && !/^user-\d{4}$/.test(r.speaker)) nameToUid.set(r.speaker, r.user);
   for (const r of allLines) keyOf.set(r, speakerKey(r, uidBySuffix, nameToUid));
-  // Everyone gets their own colour the first time they speak in this call and
-  // keeps it for the rest of the call: the map only grows while the same call is
-  // open (late lines and 2B rewrites can't reshuffle it) and starts over for another call.
-  const cid = currentCall()?.id ?? null;
-  if (cid !== colorCall) { colorIndex.clear(); colorCall = cid; }
+  // Everyone gets their own colour, numbered by when they first spoke in this call
+  // (`lines` is in time order). It's worked out from the lines alone, never from the
+  // order they arrived in, so a reload, a share viewer and another window all agree.
+  // Later lines only add people at the end; the one exception is two people who are
+  // new in the same few seconds and whose first lines finish transcribing out of
+  // order: they swap once, as soon as the earlier line arrives. (2B rewrites keep
+  // about the same start times, so they can't move anyone further than that.)
+  colorIndex.clear();
   for (const r of lines) {
     const k = keyOf.get(r);
     if (!colorIndex.has(k)) colorIndex.set(k, colorIndex.size);
@@ -873,34 +875,61 @@ function renderState() {
   const ppl = [...st.people].sort((a, b) => (b.talking - a.talking) || (b.lastSeen - a.lastSeen));
   for (const p of ppl) if (!/^user-\d{4}$/.test(p.name)) { latestName.set(p.user, p.name); names[p.user] = p.name; }
   $('#nowmeta').textContent = ppl.length ? `${ppl.filter((p) => p.talking).length} talking · ${ppl.length} heard recently` : '';
-  $('#now').innerHTML = ppl.length ? ppl.map((p) => {
+  const nowHtml = ppl.length ? ppl.map((p) => {
     const c = colorIndex.has(p.user) ? colorFor(p.user) : 'var(--other)';
     const initials = (p.name.replace(/[^\p{L}\p{N} ]/gu, '').trim().split(/\s+/).map((w) => w[0]).join('').slice(0, 2) || '?').toUpperCase();
     return `<span class="chip${p.talking ? ' talking' : ''}" title="${p.talking ? 'Talking now' : 'Last heard ' + fmtTime(p.lastSeen)}"><span class="sw" style="background:${c}"></span>${esc(p.name)}</span>`;
   }).join('') : '<span class="empty" style="padding:4px 0">No one yet</span>';
-  fitChips();
+  // rebuilt (and re-folded) only when something changed, and never mid-click
+  const nowBox = $('#now');
+  if (nowHtml !== nowBox.dataset.html && !pressing(nowBox)) { nowBox.innerHTML = nowHtml; nowBox.dataset.html = nowHtml; fitChips(); }
   if (st.res?.cpu != null) { resHist.push({ t: st.now, cpu: st.res.cpu, rss: st.res.rssMB }); while (resHist.length && st.now - resHist[0].t > 300000) resHist.shift(); }
   renderResources(); refreshPop();
 }
 
+// A click on a button that gets rebuilt between mousedown and mouseup is lost
+// (the 1 s state refresh, the 5 s personalities one), so a box is left alone
+// while a pointer is pressed in it; the next refresh catches up.
+let pressedIn = null;
+addEventListener('pointerdown', (e) => { pressedIn = e.target.closest?.('#now, #pers') || null; }, true);
+addEventListener('click', () => { pressedIn = null; }, true);   // before the button's own handler, which may re-render
+addEventListener('pointerup', () => setTimeout(() => { pressedIn = null; }), true);   // released elsewhere: no click
+addEventListener('pointercancel', () => { pressedIn = null; }, true);
+const pressing = (box) => pressedIn === box;
+
 // Compact mode keeps "Live" to a few rows: the chips that don't fit fold into a
 // "+N" chip that opens the whole list (which then scrolls inside the panel).
+// Runs when the chips change, on resize and when compact mode is turned on or off.
 let nowOpen = false;
+const moreChip = document.createElement('button'); moreChip.className = 'chip more';
+moreChip.onclick = () => { nowOpen = !nowOpen; fitChips(); };
 function fitChips() {
   const box = $('#now'); if (!box) return;
-  box.querySelectorAll('.chip.more').forEach((x) => x.remove());
+  const keep = box.scrollTop;   // where the reader is in the opened list
+  moreChip.remove();
   const chips = [...box.querySelectorAll('.chip')]; chips.forEach((c) => { c.style.display = ''; });
-  box.classList.toggle('open', compact && nowOpen);
+  box.classList.remove('open');
   if (!compact || chips.length < 2) return;
-  const more = document.createElement('button'); more.className = 'chip more';
-  more.onclick = () => { nowOpen = !nowOpen; fitChips(); };
-  if (nowOpen) { more.textContent = 'less'; more.title = 'Fold the list again'; box.appendChild(more); return; }
-  if (box.scrollHeight <= box.clientHeight + 1) return;
-  more.title = 'Show everyone in the call'; box.appendChild(more);
-  let hidden = 0;
-  for (let i = chips.length - 1; i > 0; i--) {      // hide from the end (least recently heard) until "+N" fits
-    chips[i].style.display = 'none'; more.textContent = '+' + (++hidden);
-    if (box.scrollHeight <= box.clientHeight + 1) break;
+  // Measure once, folded: where each chip ends against the room in the box.
+  box.scrollTop = 0;
+  const top = box.getBoundingClientRect().top + box.clientTop;
+  const room = box.clientHeight - (parseFloat(getComputedStyle(box).paddingBottom) || 0) + 1;
+  const ends = chips.map((c) => c.getBoundingClientRect().bottom - top);
+  let cut = ends.findIndex((b) => b > room);
+  if (cut < 0) { nowOpen = false; return; }      // everyone fits: nothing to fold, no "less"
+  if (nowOpen) {                                 // opened: "less" goes first, so it's there without scrolling
+    moreChip.textContent = 'less'; moreChip.title = 'Fold the list again';
+    box.prepend(moreChip); box.classList.add('open'); box.scrollTop = keep; return;
+  }
+  // Hide from the first chip that doesn't fit (the rest are heard less recently),
+  // then one more at a time until "+N" itself fits: usually no more than one step.
+  cut = Math.max(1, cut);
+  for (let i = cut; i < chips.length; i++) chips[i].style.display = 'none';
+  moreChip.title = 'Show everyone in the call'; box.appendChild(moreChip);
+  for (;;) {
+    moreChip.textContent = '+' + (chips.length - cut);
+    if (cut <= 1 || moreChip.getBoundingClientRect().bottom - top <= room) break;
+    chips[--cut].style.display = 'none';
   }
 }
 addEventListener('resize', () => fitChips());
@@ -1713,20 +1742,28 @@ function persRest(top) {
   const shown = new Set(top.map((p) => p.k)), rest = stats().per.filter((p) => !shown.has(p.k));
   if (!rest.length) return '';
   const tog = `<button class="tog" title="${persRestOpen ? 'Fold the list' : 'Everyone else in this call: click a name for a read'}">${persRestOpen ? 'less' : '+' + rest.length + ' more'}</button>`;
-  return `<div class="pers-rest">${persRestOpen ? rest.map((p) => `<button data-k="${esc(p.k)}" title="Personality read of ${esc(nameFor(p.k))}"><span class="swatch" style="background:${colorFor(p.k)}"></span>${esc(nameFor(p.k))}</button>`).join('') : ''}${tog}</div>`;
+  // opened, "less" comes first so it can be reached without scrolling to the end
+  return `<div class="pers-rest">${persRestOpen ? tog + rest.map((p) => `<button data-k="${esc(p.k)}" title="Personality read of ${esc(nameFor(p.k))}"><span class="swatch" style="background:${colorFor(p.k)}"></span>${esc(nameFor(p.k))}</button>`).join('') : tog}</div>`;
+}
+// Rebuilt only when it changed and not mid-click (see pressing), so the 5 s
+// refresh doesn't swallow clicks or reset the scroll for nothing.
+function setPers(box, html) {
+  if (html === box.dataset.html || pressing(box)) return false;
+  box.innerHTML = html; box.dataset.html = html; return true;
 }
 function renderPers() {
   const box = $('#pers'); if (!box) return;
-  if (personaInfo && !personaInfo.available) { box.innerHTML = `<div class="pers-empty">${esc(personaInfo.reason || 'Not available on this computer.')}</div>`; return; }
+  if (personaInfo && !personaInfo.available) { setPers(box, `<div class="pers-empty">${esc(personaInfo.reason || 'Not available on this computer.')}</div>`); return; }
   const top = persCandidates();
-  if (!top.length) { box.innerHTML = '<div class="pers-empty">Appears once people have talked for a bit.</div>'; return; }
+  if (!top.length) { setPers(box, '<div class="pers-empty">Appears once people have talked for a bit.</div>'); return; }
   const restTop = box.querySelector('.pers-rest')?.scrollTop || 0;   // keep the reader's place across the 5 s refresh
-  box.innerHTML = top.map((p) => {
+  const html = top.map((p) => {
     const o = persOverview.get(p.k);
     const body = o?.sentence ? `<div class="ps">${esc(o.sentence)}</div><div class="pt">${esc(o.traits || '')}${o.at ? ` · ${ago(o.at)}` : ''}</div>`
       : `<div class="pt">${o?.status === 'error' ? 'Couldn\'t read this one.' : o ? 'Reading…' : 'Waiting…'}</div>`;
     return `<button class="pp" data-k="${esc(p.k)}" title="${esc(nameFor(p.k))}: open the full read"><span class="pn"><span class="swatch" style="background:${colorFor(p.k)}"></span>${esc(nameFor(p.k))}</span>${body}</button>`;
   }).join('') + persRest(top);
+  if (!setPers(box, html)) return;
   box.querySelectorAll('.pp, .pers-rest [data-k]').forEach((b) => b.onclick = () => personaRead(b.dataset.k));
   if (box.querySelector('.pers-rest')) box.querySelector('.pers-rest').scrollTop = restTop;
   box.querySelector('.pers-rest .tog')?.addEventListener('click', () => { persRestOpen = !persRestOpen; renderPers(); });
@@ -1859,6 +1896,7 @@ function setCompact(on, persist = true) {
   if (persist && !SHARE) try { localStorage.setItem('ct-compact', compact ? '1' : '0'); } catch {}
   requestAnimationFrame(() => { const s = stats(); renderActivity(s); renderTimeline(s); });
   applyLayout();
+  fitChips();   // fold or unfold "Live" now, even with no state coming in (server stopped)
   if (panelShown('persona')) setTimeout(() => { renderPers(); refreshPers(); }, 800);
 }
 $('#toggle-compact').onclick = () => setCompact(!compact);
