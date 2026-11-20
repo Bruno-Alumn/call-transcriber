@@ -1973,6 +1973,11 @@ if (window.ResizeObserver) {
     raf = requestAnimationFrame(() => { if (lines.length) { const s = stats(); renderActivity(s); renderTimeline(s); } });
   });
   ro.observe($('#act').parentElement); ro.observe($('#tl').parentElement);
+  // "Live" re-folds when its panel gets narrower or wider without a window resize
+  // (sidebar, panel layout). Outer width only: folding changes its own height, and
+  // opening adds a scrollbar (which clientWidth would count, re-folding mid-click).
+  let nowW = -1;
+  new ResizeObserver(() => { const w = $('#now').offsetWidth; if (w !== nowW) { nowW = w; fitChips(); } }).observe($('#now'));
 }
 
 renderState(); connect();
