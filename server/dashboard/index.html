@@ -896,7 +896,7 @@ document.addEventListener('click', (e) => {
   e.stopPropagation();
   const r = liveState?.res || {};
   const pop = $('#pop'); popFor = null;   // (not one of the status popovers that refresh themselves)
-  pop.innerHTML = `<h3>Show in Resources</h3>${METRICS.map((m) => `<label class="srow"><span><b>${m.name}</b><small>${m.has(r) ? '' : 'not available on this computer'}</small></span><input type="checkbox" data-metric="${m.id}" ${resShown(m) ? 'checked' : ''} ${m.has(r) ? '' : 'disabled'}></label>`).join('')}
+  pop.innerHTML = `<h3>Show in Resources</h3>${METRICS.map((m) => `<label class="srow"><span><b>${m.name}</b><small>${m.has(r) ? '' : 'not available on this computer'}</small></span><input type="checkbox" data-metric="${m.id}" ${resShown(m) && m.has(r) ? 'checked' : ''} ${m.has(r) ? '' : 'disabled'}></label>`).join('')}
     <div class="hint">Memory counts Earshot's own processes, as your system's activity monitor reports them.</div>`;
   pop.style.display = 'block';
   const rr = b.getBoundingClientRect();
