@@ -195,6 +195,10 @@ select:focus, input:focus { border-color: var(--accent); }
 .line.cont { padding-top: 0; }
 .line.cont .time { visibility: hidden; }
 .line.new { animation: flash 1.6s ease-out; }
+/* lines that were not the person's own voice (a video, someone in their room) */
+.line.bg .text { color: var(--text-muted); }
+.line.bg .who { opacity: .6; }
+.bgtag { font-size: 10.5px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; margin-left: 6px; white-space: nowrap; vertical-align: 1px; }
 @keyframes flash { from { background: color-mix(in srgb, var(--accent) 16%, transparent); } to { background: transparent; } }
 mark { background: color-mix(in srgb, var(--warn) 35%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
 .empty { color: var(--text-muted); text-align: center; padding: 40px 10px; }
@@ -603,8 +607,16 @@ function highlight(text) {
   const q = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return e.replace(new RegExp(q, 'gi'), (m) => `<mark>${m}</mark>`);
 }
+// "bg" lines did not sound like the person (a video or someone else near their
+// mic). Settings > Background voices: show them plainly, dimmed, or not at all.
+const bgMode = () => serverSettings?.background || 'dim';
+// Lines that count as the person's own words in stats, the word cloud, exports
+// and Copy: all of them with "Show normally", otherwise not the bg ones.
+// (The sidebar's line and word counts never count bg lines, as the server's.)
+const own = (r) => !r.bg || bgMode() === 'show';
 function visibleLines() {
-  return lines.filter((r) => (!filter || keyOf.get(r) === filter) && (!query || r.text.toLowerCase().includes(query.toLowerCase()) || nameFor(keyOf.get(r)).toLowerCase().includes(query.toLowerCase())));
+  const hideBg = bgMode() === 'hide';
+  return lines.filter((r) => !(hideBg && r.bg) && (!filter || keyOf.get(r) === filter) && (!query || r.text.toLowerCase().includes(query.toLowerCase()) || nameFor(keyOf.get(r)).toLowerCase().includes(query.toLowerCase())));
 }
 function renderFeed(onlyAppend = false) {
   const feed = $('#feed');
@@ -620,7 +632,8 @@ function renderFeed(onlyAppend = false) {
   for (const r of slice) {
     const k = keyOf.get(r);
     const cont = prev && keyOf.get(prev) === k && r.t - prev.end < 15000;
-    html.push(`<div class="line${cont ? ' cont' : ''}${onlyAppend ? ' new' : ''}" data-t="${r.t}"><div class="time">${fmtTime(r.t)}</div><div>${cont ? '' : `<span class="who" data-k="${esc(k)}" title="Right-click for a personality read"><span class="swatch" style="background:${colorFor(k)}"></span>${esc(nameFor(k))}</span>`}<span class="text">${highlight(r.text)}</span>${lineExtras(r)}</div></div>`);
+    const dimBg = r.bg && bgMode() === 'dim';
+    html.push(`<div class="line${cont ? ' cont' : ''}${onlyAppend ? ' new' : ''}${dimBg ? ' bg' : ''}" data-t="${r.t}"><div class="time">${fmtTime(r.t)}</div><div>${cont ? '' : `<span class="who" data-k="${esc(k)}" title="Right-click for a personality read"><span class="swatch" style="background:${colorFor(k)}"></span>${esc(nameFor(k))}</span>`}<span class="text">${highlight(r.text)}</span>${dimBg ? '<span class="bgtag" title="Did not sound like this person: a video or someone else near their mic">background</span>' : ''}${lineExtras(r)}</div></div>`);
     prev = r;
   }
   feed.insertAdjacentHTML('beforeend', html.join(''));
@@ -636,19 +649,20 @@ function stats() {
   const per = new Map();
   let words = 0, talk = 0;
   for (const r of lines) {
+    if (!own(r)) continue;
     const k = keyOf.get(r), w = r.text.split(/\s+/).filter(Boolean).length;
     const p = per.get(k) || { k, talk: 0, words: 0, lines: 0 };
     p.talk += dur(r); p.words += w; p.lines++; per.set(k, p);
     words += w; talk += dur(r);
   }
   // crosstalk: lines that start while someone else is still talking
-  let cross = 0; const sorted = lines; let openEnds = [];
+  let cross = 0; const sorted = lines.filter(own); let openEnds = [];
   for (const r of sorted) {
     openEnds = openEnds.filter((o) => o.end > r.t);
     if (openEnds.some((o) => keyOf.get(o) !== keyOf.get(r))) cross++;
     openEnds.push(r);
   }
-  return { per: [...per.values()].sort((a, b) => b.talk - a.talk), words, talk, cross };
+  return { per: [...per.values()].sort((a, b) => b.talk - a.talk), words, talk, cross, n: sorted.length };
 }
 function renderKPIs(s) {
   const span = lines.length ? (lines[lines.length - 1].end - lines[0].t) / 1000 : 0;
@@ -658,10 +672,10 @@ function renderKPIs(s) {
   $('#k-words-s').textContent = s.talk > 30 ? Math.round(s.words / (s.talk / 60)) + ' words per minute spoken' : ' ';
   $('#k-people').textContent = s.per.length;
   $('#k-people-s').textContent = s.per[0] ? 'most: ' + nameFor(s.per[0].k) : ' ';
-  $('#k-lines').textContent = lines.length.toLocaleString();
-  $('#k-lines-s').textContent = lines.length ? (s.talk / lines.length).toFixed(1) + 's average length' : ' ';
+  $('#k-lines').textContent = s.n.toLocaleString();
+  $('#k-lines-s').textContent = s.n ? (s.talk / s.n).toFixed(1) + 's average length' : ' ';
   $('#k-cross').textContent = s.cross.toLocaleString();
-  $('#k-cross-s').textContent = lines.length ? Math.round(100 * s.cross / lines.length) + '% of lines overlap someone' : ' ';
+  $('#k-cross-s').textContent = s.n ? Math.round(100 * s.cross / s.n) + '% of lines overlap someone' : ' ';
 }
 function renderBars(s) {
   const max = s.per[0]?.talk || 1, total = s.talk || 1;
@@ -695,7 +709,7 @@ function renderActivity(s) {
   const keys = [...new Set([...[...colorIndex.keys()].filter((k) => colorIndex.get(k) < 8 && top8.includes(k)), 'other'])];
   const buckets = Array.from({ length: nb }, () => new Map());
   for (const r of lines) {
-    if (r.end < b0) continue;
+    if (r.end < b0 || !own(r)) continue;
     const i = Math.floor((r.t - b0) / bms); if (i < 0 || i >= nb) continue;
     let k = keyOf.get(r); if (colorIndex.get(k) >= 8) k = 'other';
     if (filter && keyOf.get(r) !== filter) continue;
@@ -741,7 +755,7 @@ function renderTimeline(s) {
   const svg = $('#tl'); const W = svg.clientWidth || 400;
   const endT = isToday() ? Date.now() : (lines[lines.length - 1]?.end || Date.now());
   const startT = endT - 10 * 60000;
-  const recent = lines.filter((r) => r.end > startT);
+  const recent = lines.filter((r) => r.end > startT && own(r));
   let keys = [...new Set(recent.map((r) => keyOf.get(r)))].sort((a, b) => colorIndex.get(a) - colorIndex.get(b));
   const sized = !!svg.closest('.card.grow');
   if (sized) {   // a sized panel: keep the most active people that fit at a readable lane height
@@ -782,7 +796,7 @@ function renderTimeline(s) {
 function renderWords() {
   const counts = new Map();
   for (const r of lines) {
-    if (filter && keyOf.get(r) !== filter) continue;
+    if ((filter && keyOf.get(r) !== filter) || !own(r)) continue;
     for (let w of r.text.toLowerCase().replace(/[^a-z0-9' ]/g, ' ').split(/\s+/)) {
       w = w.replace(/^'+|'+$/g, '');
       if (w.length < 3 || STOP.has(w) || /^\d+$/.test(w)) continue;
@@ -1110,7 +1124,7 @@ function render(fmt, sections, title) {
 }
 async function exportCalls(group, fmt) {
   const sections = [];
-  for (const c of group.calls) sections.push({ call: c, lines: linesOf(c, await dayLines(c.day)) });
+  for (const c of group.calls) sections.push({ call: c, lines: linesOf(c, await dayLines(c.day)).filter(own) });   // background voices only with "Show normally"
   sections.sort((a, b) => a.call.start - b.call.start);
   const [ext, , , mime] = FORMATS.find((f) => f[0] === fmt);
   const first = sections[0]?.call;
@@ -1509,6 +1523,7 @@ async function openSettings() {
       <div class="srow"><span><b>Speech model</b><small>${esc(model)}</small></span><button data-a="model">Change…</button></div>
       ${tog('splitLines', 'Split lines at sentences', ss.splitLines !== false, 'When people talk over each other, lines interleave in the order they were said.')}
       ${sel('sensitivity', 'Speech detection', ss.sensitivity || 'normal', [['high', 'More sensitive'], ['normal', 'Normal'], ['low', 'Less sensitive']], 'More sensitive picks up quiet voices; less ignores background noise.')}
+      ${sel('background', 'Background voices', ss.background || 'dim', [['dim', 'Dim them'], ['show', 'Show normally'], ['hide', 'Hide them']], 'Speech that doesn\'t sound like the person, like a video playing near their mic. Dimmed or hidden, they are left out of exports, Copy and talk stats; never in personality reads.')}
       ${sel('language', 'Language', ss.language || 'en', (ss.choices?.language || Object.keys(langs)).map((v) => [v, langs[v] || v]), 'English keeps Granite 470M from drifting into other languages. Changing it reloads the model.')}
       <div class="sh">Personality reads</div>
       ${tog('personality', 'Personality reads', ss.personality !== false, 'The Read buttons and the compact-mode panel. Written by a local model.')}
@@ -1533,6 +1548,7 @@ async function openSettings() {
     const r = await fetch(`/api/settings?key=${encodeURIComponent(k)}&value=${encodeURIComponent(v === true ? '1' : v === false ? '0' : v)}`, { method: 'POST', headers: { 'X-CT': '1' } }).then((x) => x.json()).catch(() => ({ error: 'The server isn\'t running.' }));
     if (r.error) { msg(r.error); return; }
     await loadServerSettings();
+    if (k === 'background') renderAll();
     msg(k === 'language' ? 'Saved. The model reloads with the new language.' : 'Saved.');
   });
   box.querySelector('[data-a="close"]').onclick = close;
@@ -1803,10 +1819,11 @@ $('#hq').oninput = () => {
     if (hq.length < 2) return renderCalls();
     const hits = await fetch('/api/search?q=' + encodeURIComponent(hq)).then((r) => r.json()).catch(() => []);
     const qre = new RegExp(hq.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-    $('#calls').innerHTML = `<div class="group">${hits.length >= 150 ? '150+' : hits.length} matches</div>` + (hits.map((h) => `
+    const shown = hits.filter((h) => !(h.bg && bgMode() === 'hide'));
+    $('#calls').innerHTML = `<div class="group">${hits.length >= 150 ? '150+' : shown.length} matches</div>` + (shown.map((h) => `
       <button class="hit" data-call="${esc(h.call || '')}" data-t="${h.t}">
         <div class="m1">${dayLabel(h.day)} ${fmtHM(h.t)}${h.chName ? ' · ' + esc(h.chName) : ''}</div>
-        <div class="m2"><b>${esc(h.speaker)}</b> ${esc(h.text).replace(qre, (m) => `<mark>${m}</mark>`)}</div>
+        <div class="m2"><b>${esc(h.speaker)}</b> ${esc(h.text).replace(qre, (m) => `<mark>${m}</mark>`)}${h.bg && bgMode() !== 'show' ? '<span class="bgtag">background</span>' : ''}</div>
       </button>`).join('') || '<div class="empty">No matches</div>');
     $('#calls').querySelectorAll('.hit').forEach((el) => el.onclick = () => el.dataset.call && openCall(el.dataset.call, +el.dataset.t));
   }, 200);
@@ -1817,7 +1834,7 @@ let qTimer; $('#q').oninput = () => { clearTimeout(qTimer); qTimer = setTimeout(
 $('#copy').onclick = async () => {
   const c = currentCall(); if (!c) return;
   const head = `${chTitle(c)}${c.guildName ? ' · ' + c.guildName : ''} — ${dayLabel(c.day)} ${fmtHM(c.start)}–${fmtHM(c.end)}\n\n`;
-  const body = lines.map((r) => `[${fmtTime(r.t)}] ${nameFor(keyOf.get(r))}: ${r.text}`).join('\n');
+  const body = lines.filter(own).map((r) => `[${fmtTime(r.t)}] ${nameFor(keyOf.get(r))}: ${r.text}`).join('\n');
   try { await navigator.clipboard.writeText(head + body); } catch { const ta = document.createElement('textarea'); ta.value = head + body; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
   $('#copy').textContent = 'Copied'; setTimeout(() => ($('#copy').textContent = 'Copy'), 1500);
 };
@@ -1860,7 +1877,7 @@ function connect() {
       }
       // the sidebar's line and word counts for calls that changed
       for (const cc of calls) if (cc.day === d && dayCache.has(d)) {
-        const ls = linesOf(cc, dayCache.get(d));
+        const ls = linesOf(cc, dayCache.get(d)).filter((x) => !x.bg);   // as the server counts them
         if ((m.lines || []).some((x) => x.t >= cc.start && x.t <= cc.end)) { cc.lines = ls.length; cc.words = ls.reduce((n, x) => n + x.text.split(/\s+/).length, 0); }
       }
       renderCalls();
@@ -1876,8 +1893,11 @@ function connect() {
         || (calls[0] && calls[0].day === d && m.t - calls[0].end < GAP && (!m.ch || !calls[0].ch) ? calls[0] : null);
       const extends_ = !!top;
       if (extends_) {
-        top.end = Math.max(top.end, m.end); top.lines++; top.words += m.text.split(/\s+/).length;
-        if (!top.people.includes(m.speaker)) top.people.push(m.speaker);
+        top.end = Math.max(top.end, m.end);
+        if (!m.bg) {                    // background voices aren't counted as the person's (as the server does)
+          top.lines++; top.words += m.text.split(/\s+/).length;
+          if (!top.people.includes(m.speaker)) top.people.push(m.speaker);
+        }
         if (m.ch && !top.ch) Object.assign(top, { ch: m.ch, chName: m.chName, guildName: m.guildName });
         if ((selected === 'live' && top === calls[0]) || selected === top.id) {
           lines = linesOf(top, dayCache.get(d) || []);
