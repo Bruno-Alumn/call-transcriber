@@ -62,7 +62,7 @@ async function scenario(name, listenerQuery) {
 
   await main.click('#join'); await listener.click('#join');
   await sleep(15000);
-  const hk = async (w) => w.evaluate(() => ({ listener: !!window.__ctListener, en: window.__dtHook?.enabled, capture: window.__dtHook?.capture, tracks: window.__dtHook?.tracks, frames: window.__dtHook?.frames, chunks: window.__dtHook?.chunks, errors: window.__dtHook?.errors, harness: window.__harness?.status }));
+  const hk = async (w) => w.evaluate(() => ({ ctx: window.__dtHook?.ctxState, listener: !!window.__ctListener, en: window.__dtHook?.enabled, capture: window.__dtHook?.capture, tracks: window.__dtHook?.tracks, frames: window.__dtHook?.frames, chunks: window.__dtHook?.chunks, errors: window.__dtHook?.errors, harness: window.__harness?.status }));
   console.log('HOOK main', JSON.stringify(await hk(main)), '| listener', JSON.stringify(await hk(listener)));
   const st = await get('/api/state');
   console.log('ACCOUNTS', JSON.stringify((st?.accounts || []).map((a) => ({ role: a.role, ch: a.channel?.name, capturing: a.capturing, present: a.present.length }))), 'own', JSON.stringify(st?.own));
@@ -118,6 +118,14 @@ async function transcribeFlow() {
 }
 
 (async () => {
+  if (process.env.DIAG_ONLY) {               // CI diagnosis: which listener setting stops audio on a machine with no sound device
+    for (const d of ['', 'nodeny', 'unmuted', 'nodeny,unmuted']) {
+      process.env.CT_DIAG = d;
+      const r = await scenario('diag-' + (d || 'default').replace(',', '-'), 'set=b&me=2');
+      console.log('DIAG', d || 'default', '-> Side room lines:', r ? r.lines.filter((l) => l.chName === 'Side room').length : 'n/a');
+    }
+    site.close(); process.exit(0);
+  }
   // 1. two accounts, two separate calls
   const a = await scenario('separate', 'set=b&me=2');
   if (a) {
