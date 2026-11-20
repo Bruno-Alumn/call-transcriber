@@ -51,6 +51,9 @@ jobs:
       - name: Timing test (lines split at the right times)
         working-directory: server
         run: uv run python ../test/timing_test.py --engine onnx
+      - name: Study mode test (offline, no model)
+        working-directory: server
+        run: uv run python ../test/study_test.py
       - name: Transcript order test (spoken order, not transcription order)
         working-directory: server
         run: uv run python ../test/order_test.py
