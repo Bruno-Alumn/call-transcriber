@@ -59,11 +59,6 @@ jobs:
         shell: bash
         env: { SERVER_ARGS: "--engine onnx" }
         run: node test/app-test.js "$RUNNER_TEMP/app-test"
-      - name: Diagnose listener audio (temporary)
-        if: runner.os == 'macOS'
-        shell: bash
-        env: { SERVER_ARGS: "--engine onnx", DIAG_ONLY: "1" }
-        run: node test/multi-test.js "$RUNNER_TEMP/diag" | grep -E "DIAG|HOOK" || true
       - name: Multi-account test (two calls at once, shared channel, listener mic, transcribe a channel)
         shell: bash
         env: { SERVER_ARGS: "--engine onnx" }

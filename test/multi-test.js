@@ -118,16 +118,6 @@ async function transcribeFlow() {
 }
 
 (async () => {
-  if (process.env.DIAG_ONLY) {               // CI diagnosis: which listener setting stops audio on a machine with no sound device
-    process.env.CT_PERMLOG = '1';
-    for (const d of ['']) {
-      process.env.CT_DIAG = d;
-      const r = await scenario('diag-' + (d || 'default').replace(',', '-'), 'set=b&me=2');
-      console.log('DIAG', d || 'default', '-> Side room lines:', r ? r.lines.filter((l) => l.chName === 'Side room').length : 'n/a');
-      console.log('DIAG perms', [...new Set((r?.logs || []).join('').split('\n').filter((l) => l.startsWith('PERM')))].join(' | '));
-    }
-    site.close(); process.exit(0);
-  }
   // 1. two accounts, two separate calls
   const a = await scenario('separate', 'set=b&me=2');
   if (a) {
