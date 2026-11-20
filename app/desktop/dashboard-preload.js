@@ -15,5 +15,7 @@ contextBridge.exposeInMainWorld('ctApp', {
   addAccount: () => ipcRenderer.invoke('ct:add-account'),
   removeAccount: (id) => ipcRenderer.invoke('ct:remove-account', String(id)),
   setRole: (id, role) => ipcRenderer.invoke('ct:set-role', String(id), String(role)),
+  appSettings: () => ipcRenderer.invoke('ct:app-settings'),
+  setAppSetting: (key, value) => ipcRenderer.invoke('ct:set-app-setting', String(key), !!value),
   onState: (fn) => ipcRenderer.on('ct:app-state', (_e, s) => fn(s)),
 });

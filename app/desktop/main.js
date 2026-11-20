@@ -219,7 +219,18 @@ const appState = () => {
 };
 
 // App settings that persist (userData/settings.json).
+const APP_DEFAULTS = { openAtLogin: false, showCallWindowOnStart: true };
 function loadSettings() { try { return JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')); } catch { return {}; } }
+function appSettings() { const s = loadSettings(); return Object.fromEntries(Object.entries(APP_DEFAULTS).map(([k, v]) => [k, k in s ? !!s[k] : v])); }
+function setAppSetting(key, value) {
+  if (!(key in APP_DEFAULTS)) return appSettings();
+  try { fs.writeFileSync(path.join(app.getPath('userData'), 'settings.json'), JSON.stringify({ ...loadSettings(), [key]: !!value })); } catch {}
+  if (key === 'openAtLogin' && !TEST) {
+    // Windows runs the app as electron.exe <app folder>; the Mac bundle starts itself.
+    app.setLoginItemSettings(IS_WIN ? { openAtLogin: !!value, path: process.execPath, args: [__dirname] } : { openAtLogin: !!value });
+  }
+  return appSettings();
+}
 
 // Sound on/off for you, per account. The hook reads each person's audio before
 // it reaches the speakers, so a muted account is still transcribed.
@@ -325,6 +336,8 @@ ipcMain.handle('ct:accounts', (e) => {
   return { accounts: accounts.map(accountSummary),
     guilds: [...guilds.values()].map((g) => ({ ...g, channels: [...g.channels.values()] })).sort((x, y) => x.name.localeCompare(y.name)) };
 });
+ipcMain.handle('ct:app-settings', (e) => (fromDash(e) ? appSettings() : null));
+ipcMain.handle('ct:set-app-setting', (e, key, value) => (fromDash(e) ? setAppSetting(String(key), !!value) : null));
 ipcMain.handle('ct:transcribe', (e, guildId, channelId) => (fromDash(e) ? transcribeChannel(String(guildId), String(channelId)) : null));
 ipcMain.handle('ct:add-account', (e) => (fromDash(e) ? addAccount() : null));
 ipcMain.handle('ct:remove-account', (e, id) => (fromDash(e) ? removeAccount(String(id)) : null));
@@ -653,7 +666,9 @@ async function relaunchAfterUpdate({ rebuild = false, deps = false, app: appDeps
 function buildMenu() {
   const t = [];
   if (IS_MAC) t.push({ label: 'Call Transcriber', submenu: [
-    { role: 'about' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { type: 'separator' },
+    { role: 'about' }, { type: 'separator' },
+    { label: 'Settings…', accelerator: 'Cmd+,', click: () => { showMain(); dash?.webContents.executeJavaScript('window.openSettings?.()').catch(() => {}); } },
+    { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { type: 'separator' },
     { label: 'Quit Call Transcriber (stops transcribing)', accelerator: 'Cmd+Q', click: quit },
   ] });
   t.push({ label: 'Discord', submenu: [
@@ -690,7 +705,8 @@ function buildMenu() {
   ] });
   t.push({ role: 'editMenu' });
   t.push({ label: 'Window', submenu: [{ role: 'minimize' }, { label: 'Close Window (keeps transcribing)', accelerator: 'CmdOrCtrl+W', role: 'close' },
-    ...(IS_WIN ? [{ type: 'separator' }, { label: 'Quit (stops transcribing)', click: quit }] : [])] });
+    ...(IS_WIN ? [{ type: 'separator' }, { label: 'Settings…', accelerator: 'Ctrl+,', click: () => { showMain(); dash?.webContents.executeJavaScript('window.openSettings?.()').catch(() => {}); } },
+      { label: 'Quit (stops transcribing)', click: quit }] : [])] });
   Menu.setApplicationMenu(Menu.buildFromTemplate(t));
 }
 
@@ -708,6 +724,7 @@ function updateTray() {
     { label: 'Restart server', click: restartServer },
     { label: server ? 'Stop server' : 'Start server', click: () => (server ? stopServer() : startServer()) },
     { label: 'Open transcripts folder', click: () => shell.openPath(path.join(ROOT, 'transcripts')) },
+    { label: 'Settings…', click: () => { showMain(); dash?.webContents.executeJavaScript('window.openSettings?.()').catch(() => {}); } },
     { type: 'separator' },
     { label: 'Quit (stops transcribing)', click: quit },
   ]));
@@ -742,7 +759,7 @@ app.whenReady().then(() => {
     updateTray();
   }
   createDashboard();
-  createDiscord(mainAccount());
+  createDiscord(mainAccount(), { show: appSettings().showCallWindowOnStart });
   // Listener accounts load when you use them; the test harness loads every account.
   if (TEST) for (const a of accounts) if (a.role !== 'main') createDiscord(a);
   startServer().then(() => { for (const a of accounts) if (winOf(a.id)) connect(a); });

@@ -107,6 +107,17 @@ const fail = (msg) => { console.log('FAIL', msg); process.exitCode = 1; };
     await dash.click('#p-ext'); await sleep(400);
     await dash.screenshot({ path: path.join(SCRATCH, 'app-dash-pop.png') });
     console.log('PILL', await dash.evaluate(() => document.querySelector('#p-ext').innerText + ' | discord button visible: ' + !document.querySelector('#p-discord').hidden));
+    // Settings: open, turn personality reads off, check the server and the page follow
+    await dash.evaluate(() => window.openSettings()); await sleep(800);
+    await dash.screenshot({ path: path.join(SCRATCH, 'app-settings.png') });
+    await dash.click('input[data-set="personality"]'); await sleep(800);
+    const sset = await new Promise((r) => http.get(`http://127.0.0.1:${PORT}/api/settings`, (res) => { let b = ''; res.on('data', (d) => (b += d)); res.on('end', () => r(JSON.parse(b))); }));
+    const hidden = await dash.evaluate(() => document.documentElement.classList.contains('no-persona'));
+    const appSet = await dash.evaluate(() => window.ctApp.appSettings());
+    console.log('SETTINGS personality ->', sset.personality, '| page hides reads:', hidden, '| app settings:', JSON.stringify(appSet));
+    if (sset.personality !== false || !hidden) fail('personality setting did not apply');
+    await dash.click('input[data-set="personality"]'); await sleep(500);
+    await dash.click('[data-a="close"]');
     const leaked = await discord.evaluate(() => typeof window.ctApp + '/' + typeof window.require);
     if (leaked !== 'undefined/undefined') fail('Discord page can see app APIs: ' + leaked);
   }

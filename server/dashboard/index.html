@@ -349,6 +349,19 @@ body.compact .col { grid-template-rows: auto auto minmax(0, 1fr) minmax(0, 1fr);
 .tr .tc:hover { border-color: var(--border); background: var(--surface-2); }
 .tr .tc svg { width: 14px; height: 14px; color: var(--text-muted); flex: none; }
 .tr .tc em { margin-left: auto; font-style: normal; font-size: 11.5px; color: var(--text-muted); }
+/* settings */
+.modal.settings .sh { font-size: 11.5px; font-weight: 600; color: var(--text-muted); margin: 14px 0 4px; }
+.modal.settings .sh:first-child { margin-top: 0; }
+.srow { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 7px 0; border-bottom: 1px solid var(--grid); cursor: default; }
+.srow span { display: flex; flex-direction: column; min-width: 0; }
+.srow b { font-weight: 500; font-size: 13px; color: var(--text-primary); }
+.srow small { color: var(--text-muted); font-size: 11.5px; margin-top: 1px; }
+.srow input[type=checkbox] { width: 16px; height: 16px; flex: none; accent-color: var(--accent); }
+.srow select { height: 28px; flex: none; }
+.srow button { flex: none; font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 5px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-primary); cursor: pointer; }
+.no-persona .bar-row .read, .no-persona .c-pers { display: none !important; }
+.no-persona body.compact .col { grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "live live" "talk act" "words tl"; }
+.share #open-settings { display: none; }
 /* ---------- house style: flat, dense, typographic (overrides the defaults above) */
 :root { --radius: 6px; --shadow: none; --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; }
 body { font-size: 13.5px; }
@@ -431,6 +444,7 @@ select, input[type=search] { border-radius: var(--radius); }
 <div class="app">
   <header>
     <button class="iconbtn" id="toggle-side" title="Show/hide calls (⌘\\)" aria-label="Show or hide the calls list">☰</button>
+    <button class="iconbtn" id="open-settings" title="Settings (⌘, / Ctrl+,)" aria-label="Settings"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M6.9 1.5h2.2l.35 1.7c.4.15.77.36 1.1.62l1.65-.55 1.1 1.9-1.3 1.15a4.6 4.6 0 0 1 0 1.26l1.3 1.15-1.1 1.9-1.65-.55c-.33.26-.7.47-1.1.62l-.35 1.7H6.9l-.35-1.7a4.4 4.4 0 0 1-1.1-.62l-1.65.55-1.1-1.9 1.3-1.15a4.6 4.6 0 0 1 0-1.26L2.7 5.17l1.1-1.9 1.65.55c.33-.26.7-.47 1.1-.62L6.9 1.5ZM8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z"/></svg></button>
     <button class="iconbtn" id="toggle-compact" title="Compact mode: everything on one screen (⌘⇧K / Ctrl+Shift+K)" aria-label="Compact mode" aria-pressed="false"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M2 2.75C2 2.34 2.34 2 2.75 2h4.5c.41 0 .75.34.75.75v10.5c0 .41-.34.75-.75.75h-4.5A.75.75 0 0 1 2 13.25V2.75Zm7 0c0-.41.34-.75.75-.75h3.5c.41 0 .75.34.75.75v3.5c0 .41-.34.75-.75.75h-3.5A.75.75 0 0 1 9 6.25v-3.5Zm0 6.5c0-.41.34-.75.75-.75h3.5c.41 0 .75.34.75.75v4c0 .41-.34.75-.75.75h-3.5a.75.75 0 0 1-.75-.75v-4Z"/></svg></button>
     <div class="brand" style="display:none">
       <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="var(--text-primary)"/>
@@ -1180,6 +1194,65 @@ $('#calls').addEventListener('contextmenu', (e) => {
 document.addEventListener('click', (e) => { if (!$('#ctx').contains(e.target)) closeCtx(); });
 addEventListener('keydown', (e) => { if (e.key === 'Escape') closeCtx(); });
 addEventListener('blur', closeCtx);
+// ------------------------------------------------------------ settings
+let serverSettings = null;
+const loadServerSettings = () => fetch('/api/settings').then((r) => r.json()).then((s) => { serverSettings = s; applySettings(); return s; }).catch(() => null);
+function applySettings() {
+  document.documentElement.classList.toggle('no-persona', serverSettings && serverSettings.personality === false);
+}
+loadServerSettings();
+async function openSettings() {
+  const ss = await loadServerSettings() || {};
+  const as = desk?.appSettings ? await desk.appSettings() : null;
+  const bg = $('#modal'), box = bg.firstElementChild;
+  box.classList.add('persona', 'settings');
+  const close = () => { bg.style.display = 'none'; box.classList.remove('persona', 'settings'); removeEventListener('keydown', key); };
+  const key = (e) => { if (e.key === 'Escape') close(); };
+  addEventListener('keydown', key);
+  bg.onclick = (e) => { if (e.target === bg) close(); };
+  const tog = (id, label, on, note = '') => `<label class="srow"><span><b>${label}</b>${note ? `<small>${note}</small>` : ''}</span><input type="checkbox" data-set="${id}" ${on ? 'checked' : ''}></label>`;
+  const sel = (id, label, cur, opts, note = '') => `<label class="srow"><span><b>${label}</b>${note ? `<small>${note}</small>` : ''}</span><select data-set="${id}">${opts.map(([v, t]) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${t}</option>`).join('')}</select></label>`;
+  const langs = { en: 'English', auto: 'Detect automatically', es: 'Spanish', fr: 'French', de: 'German', it: 'Italian', pt: 'Portuguese', nl: 'Dutch', pl: 'Polish', ru: 'Russian', uk: 'Ukrainian', ja: 'Japanese', zh: 'Chinese', ko: 'Korean' };
+  const model = modelsInfo?.models?.find((m) => m.id === liveState?.modelId)?.name || liveState?.model || '—';
+  box.innerHTML = `<h3>Settings</h3>
+    <div class="pbody">
+      ${as ? `<div class="sh">App</div>
+        ${tog('app:openAtLogin', 'Open at login', as.openAtLogin, 'Starts transcribing as soon as you sign in to your computer.')}
+        ${tog('app:showCallWindowOnStart', 'Show the call window on start', as.showCallWindowOnStart, 'Off: it opens hidden and stays connected.')}` : ''}
+      ${tog('ui:compact', 'Compact mode', compact, 'Everything on one screen.')}
+      <div class="sh">Transcription</div>
+      <div class="srow"><span><b>Speech model</b><small>${esc(model)}</small></span><button data-a="model">Change…</button></div>
+      ${tog('splitLines', 'Split lines at sentences', ss.splitLines !== false, 'When people talk over each other, lines interleave in the order they were said.')}
+      ${sel('sensitivity', 'Speech detection', ss.sensitivity || 'normal', [['high', 'More sensitive'], ['normal', 'Normal'], ['low', 'Less sensitive']], 'More sensitive picks up quiet voices; less ignores background noise.')}
+      ${sel('language', 'Language', ss.language || 'en', (ss.choices?.language || Object.keys(langs)).map((v) => [v, langs[v] || v]), 'Used by Whisper and Qwen3-ASR. Changing it reloads the model.')}
+      <div class="sh">Personality reads</div>
+      ${tog('personality', 'Personality reads', ss.personality !== false, 'The Read buttons and the compact-mode panel. Written by a local model.')}
+      <div class="sh">Updates</div>
+      ${tog('autoUpdate', 'Check for updates automatically', ss.autoUpdate !== false, `Version ${esc(upd?.current || '—')}. Checks when the app starts and every 6 hours.`)}
+      ${desk?.accounts ? `<div class="sh">Accounts</div><div class="srow"><span><b>Accounts</b><small>${(appState.accounts || []).length} signed in or added</small></span><button data-a="accounts">Manage…</button></div>` : ''}
+    </div>
+    <div class="pnote" id="smsg"></div>
+    <div class="btns"><button data-a="check">Check for updates</button><button data-a="close">Done</button></div>`;
+  const msg = (t) => { box.querySelector('#smsg').textContent = t; };
+  box.querySelectorAll('[data-set]').forEach((el) => el.onchange = async () => {
+    const k = el.dataset.set, v = el.type === 'checkbox' ? el.checked : el.value;
+    if (k.startsWith('app:')) { await desk.setAppSetting(k.slice(4), v); msg('Saved.'); return; }
+    if (k === 'ui:compact') { setCompact(v); msg('Saved.'); return; }
+    const r = await fetch(`/api/settings?key=${encodeURIComponent(k)}&value=${encodeURIComponent(v === true ? '1' : v === false ? '0' : v)}`, { method: 'POST', headers: { 'X-CT': '1' } }).then((x) => x.json()).catch(() => ({ error: 'The server isn\'t running.' }));
+    if (r.error) { msg(r.error); return; }
+    await loadServerSettings();
+    msg(k === 'language' ? 'Saved. The model reloads with the new language.' : 'Saved.');
+  });
+  box.querySelector('[data-a="close"]').onclick = close;
+  box.querySelector('[data-a="check"]').onclick = async () => { msg('Checking…'); await fetch('/api/update/check', { method: 'POST', headers: { 'X-CT': '1' } }).catch(() => {}); await loadUpdate(); msg(upd?.available ? `${upd.latest} is available.` : upd?.error || 'You have the latest version.'); };
+  box.querySelector('[data-a="model"]')?.addEventListener('click', (e) => { close(); setTimeout(() => $('#p-model').click(), 50); });
+  box.querySelector('[data-a="accounts"]')?.addEventListener('click', () => { close(); setTimeout(() => $('#p-ext').click(), 50); });
+  bg.style.display = 'grid';
+}
+window.openSettings = openSettings;
+$('#open-settings').onclick = openSettings;
+addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && e.key === ',' && !desk) { e.preventDefault(); openSettings(); } });
+
 // ------------------------------------------------------------ accounts (desktop app)
 function accountLine(a) {
   const st = !a.open ? 'not open' : !a.signedIn ? 'sign in to Discord in its window'
@@ -1246,7 +1319,7 @@ window.openTranscribe = openTranscribe;
 let personaInfo = null;
 fetch('/api/persona/info').then((r) => r.json()).then((i) => { personaInfo = i; }).catch(() => {});
 document.addEventListener('contextmenu', (e) => {
-  const w = e.target.closest?.('.line .who'); if (!w || SHARE) return;
+  const w = e.target.closest?.('.line .who'); if (!w || SHARE || serverSettings?.personality === false) return;
   e.preventDefault(); personaRead(w.dataset.k);
 });
 function personaHtml(text) {
@@ -1339,7 +1412,7 @@ function renderPers() {
   box.querySelectorAll('.pp').forEach((b) => b.onclick = () => personaRead(b.dataset.k));
 }
 async function refreshPers() {
-  if (!compact || SHARE || persBusy || document.hidden) return;
+  if (!compact || SHARE || persBusy || document.hidden || serverSettings?.personality === false) return;
   if (personaInfo && !personaInfo.available) return renderPers();
   const c = currentCall(); if (!c) return renderPers();
   if (persCallId !== c.id) { persOverview.clear(); persCallId = c.id; }

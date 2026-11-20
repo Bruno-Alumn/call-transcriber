@@ -95,9 +95,10 @@ With an NVIDIA graphics card the PC uses it for the most accurate model; without
 | <kbd>⌘</kbd><kbd>⇧</kbd><kbd>K</kbd> | Switches compact mode on and off |
 | <kbd>⌘</kbd><kbd>⇧</kbd><kbd>M</kbd> | Turns the call's sound off for you, while it keeps being transcribed |
 | <kbd>⌘</kbd><kbd>⇧</kbd><kbd>F</kbd> | Searches every call |
+| <kbd>⌘</kbd><kbd>,</kbd> | Opens Settings: start at login, sentence splitting, speech detection, language, personality reads, updates |
 | **Read** next to a name in Talk time | Writes a personality read of that person |
 
-On a PC, use <kbd>Ctrl</kbd> in place of <kbd>⌘</kbd>. Accounts, models and updates are under the status buttons at the top of the dashboard.
+On a PC, use <kbd>Ctrl</kbd> in place of <kbd>⌘</kbd>. Accounts and the speech model are also under the status buttons at the top of the dashboard.
 
 Transcripts are saved in `transcripts/`, one Markdown and one JSON Lines file per day. Recording laws differ by place, and in many of them everyone in the call has to agree; following them is up to you.
 

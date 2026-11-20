@@ -402,7 +402,8 @@ class Updater:
         time.sleep(20)
         while True:
             try:
-                self.check()
+                if current_settings()["autoUpdate"]:
+                    self.check()
             except Exception as e:
                 self.state["error"] = str(e)[:200]
             time.sleep(6 * 3600)
@@ -660,6 +661,31 @@ def save_settings(**kw):
     settings_path().write_text(json.dumps(st, indent=1), encoding="utf-8")
 
 
+# Settings the dashboard can change (stored with the model choice in settings.json).
+SETTING_DEFAULTS = {"splitLines": True, "personality": True, "autoUpdate": True, "sensitivity": "normal", "language": "en"}
+SETTING_CHOICES = {"sensitivity": ["high", "normal", "low"],
+                   "language": ["en", "auto", "es", "fr", "de", "it", "pt", "nl", "pl", "ru", "uk", "ja", "zh", "ko"]}
+SENSITIVITY = {"high": 0.5, "normal": 1.0, "low": 2.0}     # x the speech threshold: high hears quieter voices
+
+
+def current_settings() -> dict:
+    st = load_settings()
+    return {k: st.get(k, v) for k, v in SETTING_DEFAULTS.items()}
+
+
+def set_setting(key: str, raw: str) -> dict:
+    if key not in SETTING_DEFAULTS:
+        return {"error": "unknown setting"}
+    if isinstance(SETTING_DEFAULTS[key], bool):
+        val = raw in ("1", "true", "on")
+    else:
+        val = raw if raw in SETTING_CHOICES.get(key, []) else None
+        if val is None:
+            return {"error": "not one of " + ", ".join(SETTING_CHOICES.get(key, []))}
+    save_settings(**{key: val})
+    return {"ok": True, key: val}
+
+
 # ---------------------------------------------------------------- personality read
 # A quick, for-fun personality sketch of one person from what they said in a
 # call, written by a small local language model (Liquid AI LFM3-1.7B). Loaded
@@ -786,6 +812,8 @@ class PersonalityReader:
                     print("Personality read: model unloaded (idle).", flush=True)
 
     def start(self, day: str, t0: int, t1: int, ch: str, user: str, name: str, fresh: bool = False) -> dict:
+        if not current_settings()["personality"]:
+            return {"error": "Personality reads are turned off in Settings."}
         eng, why = self.engine_here()
         if not eng:
             return {"error": why}
@@ -1009,15 +1037,17 @@ def load_engine(engine: str, repo: str, language: str | None):
     raise SystemExit(f"Unknown engine {engine!r} (use mlx, torch, onnx or auto)")
 
 
-def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None):
+def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, language_forced: bool = False):
     """Transcribes queued utterances. Switches models live when hub.want changes
     (utterances wait in the queue while the new model loads)."""
     import gc
     current, model_run = None, None
     while True:
-        want = hub.want                                   # (id, engine, repo)
+        lang = current_settings()["language"] if not language_forced else language
+        want = (*hub.want, lang)                          # (id, engine, repo, language)
         if want != current:
-            mid, engine, repo = want
+            mid, engine, repo, lang = want
+            language = None if lang == "auto" else lang
             hub.model_ready, hub.loading = False, mid
             print(f"Loading {repo} on {engine} (first run downloads it)…", flush=True)
             try:
@@ -1028,7 +1058,7 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None):
                 hub.model_error = f"{mid}: {str(e)[:200]}"
                 if current is None:
                     raise
-                hub.want = current                        # fall back to the previous model
+                hub.want = current[:3]                    # fall back to the previous model
                 hub.model_ready, hub.loading = True, None
                 continue
             model_run = new_run
@@ -1063,7 +1093,10 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None):
             continue
         if not text or tidy(text).lower() in HALLUCINATIONS:
             continue
-        parts = split_timed(res["pieces"]) if isinstance(res, dict) and res.get("pieces") else split_by_text(text, len(audio) / SR)
+        if not current_settings()["splitLines"]:
+            parts = [(text, 0.0, len(audio) / SR)]
+        else:
+            parts = split_timed(res["pieces"]) if isinstance(res, dict) and res.get("pieces") else split_by_text(text, len(audio) / SR)
         for part, a, b in parts:
             part = tidy(part)
             if part and part.lower() not in HALLUCINATIONS:
@@ -1131,7 +1164,8 @@ async def main():
     updater = Updater(hub)
     persona = PersonalityReader()
     threading.Thread(target=updater.loop, daemon=True).start()
-    threading.Thread(target=transcriber, args=(q, writer, hub, language), daemon=True).start()
+    lang_cli = "--language" in sys.argv                  # an explicit --language wins over the setting
+    threading.Thread(target=transcriber, args=(q, writer, hub, language, lang_cli), daemon=True).start()
 
     async def http(connection, request):
         # Plain HTTP (the dashboard); WebSocket upgrades fall through to handle().
@@ -1181,6 +1215,15 @@ async def main():
             hub.want = (m["id"], m["engine"], m["repo"])
             save_settings(model=m["id"])
             return respond({"ok": True, "loading": m["id"]})
+        if path == "/api/settings":
+            if request.headers.get("X-CT") == "1" and params.get("key"):
+                from urllib.parse import unquote
+                res = set_setting(params["key"], unquote(params.get("value", "")))
+                if res.get("ok") and params["key"] == "sensitivity":
+                    for p in hub.people.values():
+                        p.threshold = args.threshold * SENSITIVITY[res["sensitivity"]]
+                return respond(res, status=400 if "error" in res else 200)
+            return respond({**current_settings(), "choices": SETTING_CHOICES})
         if path == "/api/persona/info":
             return respond(persona.info())
         if path == "/api/persona/start":
@@ -1308,7 +1351,8 @@ async def main():
                         continue
                     uid = ev["user"]
                     if uid not in people:
-                        people[uid] = Segmenter(q, args.threshold, label=f"user-{uid[-4:]}", uid=uid)
+                        people[uid] = Segmenter(q, args.threshold * SENSITIVITY.get(current_settings()["sensitivity"], 1.0),
+                                                label=f"user-{uid[-4:]}", uid=uid)
                     if ev.get("name"):
                         people[uid].label = ev["name"]
                         hub.learn_name(uid, ev["name"])
