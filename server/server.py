@@ -423,6 +423,7 @@ class Hub:
         # one transcribing its channel (two of your accounts in one channel must
         # not transcribe everything twice).
         self.conns: dict = {}             # ws -> {account, role, userId, label, since, capturing}
+        self.uid_owner: dict = {}         # person -> (connection, last chunk time): one source per person
         self.res: dict = {}
         self.audio_s = self.proc_s = 0.0             # transcription throughput
         self.latency: deque = deque(maxlen=50)        # s from end of speech to text
@@ -1189,6 +1190,8 @@ async def main():
             return Response(status, {200: "OK", 400: "Bad Request", 403: "Forbidden"}.get(status, "Not Found"),
                             Headers([("Content-Type", ctype), ("Cache-Control", "no-store"),
                                      ("Content-Length", str(len(body)))]), body)
+        if path == "/logo.png":
+            return respond((DASHBOARD / "logo.png").read_bytes(), "image/png")
         if path in ("/", "/index.html"):
             return respond((DASHBOARD / "index.html").read_bytes(), "text/html; charset=utf-8")
         if path == "/api/state":
@@ -1350,6 +1353,14 @@ async def main():
                     if not conn["capturing"]:          # another of your accounts is transcribing this channel
                         continue
                     uid = ev["user"]
+                    # Two of your accounts in one call both hear this person: take their
+                    # audio from one connection only (until it goes quiet for 2 s).
+                    own = hub.uid_owner.get(uid)
+                    now_t = time.time()
+                    if (own and own[0] is not ws and own[0] in hub.conns and hub.conns[own[0]]["capturing"]
+                            and now_t - own[1] < 2.0):
+                        continue                       # (hands over at once when that one stands by)
+                    hub.uid_owner[uid] = (ws, now_t)
                     if uid not in people:
                         people[uid] = Segmenter(q, args.threshold * SENSITIVITY.get(current_settings()["sensitivity"], 1.0),
                                                 label=f"user-{uid[-4:]}", uid=uid)

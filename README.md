@@ -8,9 +8,9 @@
 
 Live transcripts of your voice calls, one person at a time, on your own computer.
 
-<a href="https://github.com/Bruno-Alumn/earshot/releases/latest"><img src="https://img.shields.io/badge/Download_for_Mac_%26_PC-0E8A7B?style=for-the-badge&logo=apple&logoColor=white" alt="Download Earshot for Mac and PC" height="36"></a>
+<a href="https://github.com/Bruno-Alumn/earshot/releases/latest"><img src="https://img.shields.io/badge/Download_for_Mac_%26_PC-000A3B?style=for-the-badge&logo=apple&logoColor=white" alt="Download Earshot for Mac and PC" height="36"></a>
 
-<a href="https://github.com/Bruno-Alumn/earshot/releases/latest"><img src="https://img.shields.io/github/v/release/Bruno-Alumn/earshot?style=flat-square&color=0E8A7B&label=release" alt="Latest release"></a>
+<a href="https://github.com/Bruno-Alumn/earshot/releases/latest"><img src="https://img.shields.io/github/v/release/Bruno-Alumn/earshot?style=flat-square&color=000A3B&label=release" alt="Latest release"></a>
 <img src="https://img.shields.io/badge/macOS-14%2B-1f2937?style=flat-square&logo=apple&logoColor=white" alt="macOS 14 or later">
 <img src="https://img.shields.io/badge/Windows-10_%7C_11-1f2937?style=flat-square&logo=windows&logoColor=white" alt="Windows 10 or 11">
 <img src="https://img.shields.io/badge/license-All_rights_reserved-6b7280?style=flat-square" alt="All rights reserved">

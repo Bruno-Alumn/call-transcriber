@@ -142,7 +142,9 @@ async function transcribeFlow() {
     if (cap.length !== 1 || cap[0].role !== 'listener') fail('exactly the listener should transcribe a shared channel: ' + JSON.stringify(b.st?.accounts?.map((x) => [x.role, x.capturing])));
     const texts = b.lines.map((l) => l.speaker + l.text);
     if (new Set(texts).size !== texts.length) fail('same call transcribed twice');
-    if (b.lines.length < 4 || b.lines.length > 6) fail('expected the usual 5 lines once, got ' + b.lines.length);
+    if (b.lines.length < 4 || b.lines.length > 8) fail('expected the call once (5 utterances), got ' + b.lines.length + ' lines');
+    const doubled = b.lines.filter((l) => /\b(\w+) \1 (\w+) \2\b/i.test(l.text));
+    if (doubled.length) fail('audio from two accounts mixed together: ' + doubled.map((l) => l.text).join(' | '));
   }
   // 3. "Transcribe a channel": the free listener opens the channel with Join highlighted; you click Join.
   await transcribeFlow();

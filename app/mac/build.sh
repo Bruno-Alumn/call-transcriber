@@ -23,7 +23,7 @@ fi
 APP="build/Call Transcriber.app"
 rm -rf build && mkdir -p build/icon.iconset
 cp -R "$DESKTOP/node_modules/electron/dist/Electron.app" "$APP"
-swiftc -O -o build/icon icon.swift -framework AppKit && ./build/icon build/icon-1024.png
+cp icon-1024.png build/icon-1024.png      # the Earshot logo on Apple's icon grid
 for s in 16 32 128 256 512; do
   sips -z $s $s build/icon-1024.png --out build/icon.iconset/icon_${s}x${s}.png >/dev/null
   sips -z $((s*2)) $((s*2)) build/icon-1024.png --out build/icon.iconset/icon_${s}x${s}@2x.png >/dev/null
