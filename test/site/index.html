@@ -43,7 +43,7 @@ if (location.search.includes('nowl=1')) AudioWorklet.prototype.addModule = () =>
   SelC.displayName = 'SelectedChannelStore';
   class ChanC extends Store { getChannel(id) { return chans[id]; } }
   ChanC.displayName = 'ChannelStore';
-  class GuildC extends Store { getGuild(id) { return { id, name: id.endsWith('2') ? 'Night Owls (test)' : 'WARDOGS (test)' }; } }
+  class GuildC extends Store { getGuild(id) { return { id, name: id.endsWith('2') ? 'Night Owls (test)' : 'Stone Harbor (test)' }; } }
   GuildC.displayName = 'GuildStore';
   const intl = new Proxy({}, { get: () => () => ({ locale: 'en', ast: [] }) });
   const main = { c: { 1: { exports: { Z: new UserStoreC() } }, 2: { exports: { default: new MemberStoreC() } }, 3: { exports: { A: new VoiceStoreC() } }, 6: { exports: { Z: new SelC() } }, 7: { exports: { Z: new ChanC() } }, 8: { exports: { default: new GuildC() } }, 4: { exports: { b: 1 } }, 5: { exports: { c: 2 } } } };
