@@ -182,10 +182,8 @@ class Segmenter:
         else:
             self.vad.reset()                     # quiet, between utterances: nothing worth remembering
             speech = False
-        if not speech and rms < self.noise * 3:
-            # (only quiet-ish audio moves the noise floor: loud noise the VAD
-            # turned down must not lift it, or the fallback gate goes deaf)
-            self.noise = 0.98 * self.noise + 0.02 * rms
+        if not speech:
+            self.noise = 0.98 * self.noise + 0.02 * rms   # (only the loudness-only gate uses it)
         if self.cur:
             self.cur.append((t, pcm))
             self.voiced_ms += voiced * VAD_WINDOW / SR * 1000
