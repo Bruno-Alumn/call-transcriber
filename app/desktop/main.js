@@ -246,6 +246,7 @@ function createDashboard() {
     webPreferences: { preload: path.join(__dirname, 'dashboard-preload.js'), contextIsolation: true, sandbox: true, backgroundThrottling: true },
   });
   dash.once('ready-to-show', () => dash.show());
+  dash.webContents.on('did-finish-load', () => dash.webContents.send('ct:app-state', appState()));
   dash.on('close', (e) => { if (!quitting) { e.preventDefault(); dash.hide(); } });   // keeps transcribing
   dash.webContents.on('will-navigate', (e, url) => { if (!isDashUrl(url)) { e.preventDefault(); openExternal(url); } });
   dash.webContents.setWindowOpenHandler(({ url }) => { openExternal(url); return { action: 'deny' }; });
@@ -326,7 +327,7 @@ async function relaunchAfterUpdate({ rebuild = false, deps = false, app: appDeps
     // The app bundle embeds Electron: rebuild it, then open the new copy.
     const code = await run('/bin/zsh', ['-lc', `"${path.join(ROOT, 'app', 'mac', 'build.sh')}"`]);
     if (code !== 0) { splash('The app rebuild failed. Run app/mac/build.sh in a terminal to see why.', { error: true, offerStart: true }); return; }
-    spawn('/bin/sh', ['-c', `sleep 1; open -n "${path.join(app.getPath('home'), 'Applications', 'Call Transcriber.app')}"`], { detached: true, stdio: 'ignore' }).unref();
+    spawn('/bin/sh', ['-c', `sleep 1; open -n "${path.join(process.env.CT_INSTALL_DIR || path.join(app.getPath('home'), 'Applications'), 'Call Transcriber.app')}"`], { detached: true, stdio: 'ignore' }).unref();
   } else if (IS_WIN && appDeps) {
     // electron.exe can't be replaced while it runs: refresh it after we exit, then start again.
     const exe = path.join(desktopDir, 'node_modules', 'electron', 'dist', 'electron.exe');

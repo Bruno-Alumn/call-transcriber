@@ -408,8 +408,7 @@ class Hub:
         self.clients: set = set()
         self.extensions = 0
         self.ext_sockets: set = set()
-        self.ext_status: dict = {}
-        self.ext_status_at = 0.0
+        self.ext_reports: dict = {}       # connection -> (status, time): Chrome and the app can both be connected
         self.res: dict = {}
         self.audio_s = self.proc_s = 0.0             # transcription throughput
         self.latency: deque = deque(maxlen=50)        # s from end of speech to text
@@ -435,7 +434,13 @@ class Hub:
         now = time.time()
         ppl = [{"user": uid, "name": p.label, "talking": bool(p.cur) and now - p.last_seen < 1.5,
                 "lastSeen": int(p.last_seen * 1000)} for uid, p in self.people.items() if now - p.last_seen < 120]
-        st, age = self.ext_status, now - self.ext_status_at
+        # Report from the connection that matters: in a call first, then the app, then the latest.
+        reports = [r for r in self.ext_reports.values() if now - r[1] < 15] or \
+                  sorted(self.ext_reports.values(), key=lambda r: r[1])[-1:]
+        best = max(reports, key=lambda r: (bool(r[0].get("pcs")) and bool(r[0].get("tracks")),
+                                           r[0].get("client") == "app", r[1]), default=({}, 0.0))
+        st, at = best
+        age = now - at
         ext = {"connected": self.extensions > 0,
                "discordTab": self.extensions > 0 and age < 15,          # a Discord tab reports every 5 s
                "paused": bool(st.get("paused")) if age < 15 else False,
@@ -445,7 +450,7 @@ class Hub:
                "audio": st.get("ctx"), "hook": st.get("v"), "errors": st.get("errors") or [],
                "channel": st.get("channel") if age < 15 else None,
                "client": st.get("client") or "chrome",           # "app": Discord inside the desktop app
-               "lastReport": int(self.ext_status_at * 1000) if self.ext_status_at else None}
+               "lastReport": int(at * 1000) if at else None}
         return {"type": "state", "model": self.model, "engine": getattr(self, "engine", None), "modelReady": self.model_ready,
                 "modelId": getattr(self, "model_id", None), "modelLoading": getattr(self, "loading", None),
                 "modelError": getattr(self, "model_error", None),
@@ -946,7 +951,7 @@ async def main():
                     pcm = np.frombuffer(base64.b64decode(ev["pcm"]), dtype="<i2").astype(np.float32) / 32768.0
                     people[uid].push(ev["t"], pcm)
                 elif ev["type"] == "hook-status":
-                    hub.ext_status, hub.ext_status_at = {**ev["s"], "paused": ev.get("paused")}, time.time()
+                    hub.ext_reports[ws] = ({**ev["s"], "paused": ev.get("paused")}, time.time())
                     with (TRANSCRIPTS.parent / "status.log").open("a", encoding="utf-8") as f:
                         f.write(json.dumps({"t": dt.datetime.now().isoformat(timespec="seconds"),
                                             **ev["s"], "paused": ev.get("paused")}) + "\n")
@@ -958,6 +963,7 @@ async def main():
         finally:
             hub.extensions -= 1
             hub.ext_sockets.discard(ws)
+            hub.ext_reports.pop(ws, None)
             flusher.cancel()
             for p in people.values():
                 p.flush()

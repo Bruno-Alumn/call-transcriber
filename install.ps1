@@ -79,14 +79,24 @@ if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
     }
     if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { throw 'Node.js is needed: install it from https://nodejs.org and run install.cmd again.' }
 }
-Push-Location $Desk
-try {
-    $ErrorActionPreference = 'Continue'
-    npm ci --no-audit --no-fund --loglevel=error
-    node node_modules\electron\install.js   # (Electron fetches its binary on demand)
-    $ErrorActionPreference = 'Stop'
-    if (-not (Test-Path $Exe)) { throw 'Installing the app failed (see the messages above).' }
-} finally { Pop-Location }
+$want = (Get-Content (Join-Path $Desk 'package.json') -Raw | ConvertFrom-Json).devDependencies.electron
+$verFile = Join-Path $Desk 'node_modules\electron\dist\version'
+$have = if (Test-Path $verFile) { (Get-Content $verFile -Raw).Trim() } else { '' }
+if ($have -eq $want -and (Test-Path $Exe)) {
+    Write-Host "App runtime (Electron $want) already installed."
+} else {
+    if (Get-Process electron -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $Exe }) {
+        throw 'Quit Call Transcriber first (tray icon > Quit), then run install.cmd again.'
+    }
+    Push-Location $Desk
+    try {
+        $ErrorActionPreference = 'Continue'
+        npm ci --no-audit --no-fund --loglevel=error
+        node node_modules\electron\install.js   # (Electron fetches its binary on demand)
+        $ErrorActionPreference = 'Stop'
+        if (-not (Test-Path $Exe)) { throw 'Installing the app failed (see the messages above).' }
+    } finally { Pop-Location }
+}
 
 # 6. Shortcuts -------------------------------------------------------------
 Step 'Creating Start menu and desktop shortcuts'

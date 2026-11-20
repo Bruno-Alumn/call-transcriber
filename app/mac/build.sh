@@ -54,7 +54,8 @@ JSON
 node -e "require('fs').writeFileSync(process.argv[1], 'require(' + JSON.stringify(process.argv[2]) + ');\n')" "$RES/app/index.js" "$DESKTOP/main.js"
 
 codesign --force --deep -s - "$APP" 2>/dev/null
-mkdir -p ~/Applications
-rm -rf ~/Applications/"Call Transcriber.app"
-cp -R "$APP" ~/Applications/
-echo "Installed: ~/Applications/Call Transcriber.app"
+DEST="${CT_INSTALL_DIR:-$HOME/Applications}"     # (tests install elsewhere)
+mkdir -p "$DEST"
+rm -rf "$DEST/Call Transcriber.app"
+cp -R "$APP" "$DEST/"
+echo "Installed: $DEST/Call Transcriber.app"
