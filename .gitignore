@@ -1,0 +1,21 @@
+# Personal data: transcripts and who's-who stay on each machine, never in git
+transcripts/
+names.json
+archive.json
+*.log
+
+# Build output / environments
+dist/
+app/mac/build/
+server/.venv/
+.webview/
+node_modules/
+__pycache__/
+*.pyc
+test/test-results/
+
+# Misc
+.DS_Store
+events/
+# abandoned bot-account approach, kept locally only
+bot/

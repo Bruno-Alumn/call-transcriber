@@ -1,0 +1,72 @@
+# Keeps macOS and Windows at parity: every push builds both apps and runs the
+# same end-to-end transcription test on both operating systems.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    name: Syntax checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Extension + dashboard JavaScript
+        run: |
+          for f in extension/*.js; do node --check "$f"; done
+          node -e "const s=require('fs').readFileSync('server/dashboard/index.html','utf8'); new Function(s.slice(s.indexOf('<script>')+8, s.lastIndexOf('</script>'))); console.log('dashboard ok')"
+          python3 -c "import json; json.load(open('extension/manifest.json'))"
+      - name: Python
+        run: python3 -m py_compile server/server.py app/windows/call_transcriber.pyw test/server_e2e.py
+
+  test:
+    name: Transcription test (${{ matrix.os }})
+    needs: checks
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install server
+        working-directory: server
+        run: uv sync
+      - name: Add ONNX engine on macOS (CI runners have no usable Metal GPU)
+        if: runner.os == 'macOS'
+        working-directory: server
+        run: uv pip install "onnx-asr[cpu,hub]>=0.12"
+      - name: Cache speech model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-parakeet-v2-${{ runner.os }}
+      - name: End-to-end test (3 overlapping speakers, names, channel)
+        working-directory: server
+        run: uv run python ../test/server_e2e.py --engine onnx
+
+  build-mac:
+    name: Build macOS app + Windows package
+    needs: checks
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Call Transcriber.app
+        run: |
+          zsh app/mac/build.sh
+          cd app/mac/build && ditto -c -k --keepParent "Call Transcriber.app" ../../../Call-Transcriber-macOS.zip
+      - name: Build Windows package
+        run: zsh app/windows/make-zip.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Call-Transcriber-macOS
+          path: Call-Transcriber-macOS.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Call-Transcriber-Windows
+          path: dist/CallTranscriber-Windows.zip

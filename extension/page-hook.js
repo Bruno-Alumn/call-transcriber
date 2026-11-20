@@ -1,0 +1,355 @@
+// Runs in Discord's page (MAIN world) at document_start, before Discord opens
+// its voice connection.
+//
+// Discord's web client receives every participant as a separate WebRTC audio
+// track; the remote stream id is "<userId>-<ssrc>". We read a clone of each
+// track (playback is untouched), downsample to 16 kHz mono, and post 200 ms
+// chunks tagged with the user id + display name to content.js.
+(() => {
+  if (window.__dtHook) return;
+  window.__dtHook = { version: 10, tracks: 0, chunks: 0, errors: [], loadedAt: document.readyState, pcs: 0, badStreamIds: [] };
+  const H = window.__dtHook;
+  const pcs = new Set();
+  const ssrcUser = new Map();           // voice gateway op 5: ssrc -> user id
+  const readers = new Map();            // track.id -> entry
+  const idName = new Map();             // user id -> display name
+  const lastActive = new Map();         // user id -> ms of last audible chunk
+  let enabled = false;
+
+  // ---------------------------------------------------------------- names
+  const ROW = '[class*="voiceUser"]';
+  const clean = (n) => (typeof n === 'string' ? n : '').replace(/, (Muted|Deafened|Server Muted|Server Deafened)$/i, '').trim().slice(0, 60);
+  function rowName(row) {
+    const el = row.querySelector('[class*="usernameFont"], [class*="username"], [class*="displayName"]');
+    return clean(el?.textContent) ||
+      clean(row.querySelector('[aria-label]')?.getAttribute('aria-label')) ||
+      clean(row.innerText?.split('\n').map((s) => s.trim()).find(Boolean));
+  }
+  // Identify the user id behind a sidebar row.
+  //  1. Avatar URL embeds the id (authoritative; seen in real Discord data).
+  //  2. React props on the row or its ancestors. A shared ancestor would give
+  //     the same id to many rows, so a React id is only trusted when exactly
+  //     one row yields it and no avatar already belongs to someone else.
+  function fiberOf(el) { const k = Object.keys(el).find((x) => x.startsWith('__reactFiber$')); return k ? el[k] : null; }
+  function propId(p) {
+    if (!p || typeof p !== 'object') return null;
+    const c = [p.user?.id, p.userId, p.voiceState?.userId, p.participant?.user?.id, p.member?.userId, p.id && p.username && p.id];
+    return c.find((x) => typeof x === 'string' && /^\d{15,22}$/.test(x)) || null;
+  }
+  function rowUserId(row) {
+    const m = (row.querySelector('[style*="background-image"]')?.getAttribute('style') || '').match(/\/avatars\/(\d{15,22})\//);
+    if (m) return [m[1], 'avatar'];
+    for (let f = fiberOf(row), i = 0; f && i < 15; f = f.return, i++) {
+      const id = propId(f.memoizedProps);
+      if (id) return [id, 'react'];
+    }
+    return [null, null];
+  }
+  function fiberKeys(row) {      // diagnostics only: prop names up the tree, no values
+    const out = [];
+    for (let f = fiberOf(row), i = 0; f && i < 15; f = f.return, i++) {
+      const p = f.memoizedProps;
+      if (p && typeof p === 'object') out.push(Object.keys(p).filter((k) => k !== 'children').slice(0, 8).join(','));
+    }
+    return out;
+  }
+
+  // Discord's own in-memory stores. Discord's page runs several rspack
+  // runtimes sharing webpackChunkdiscord_app; pushing a chunk calls back once
+  // per runtime. Only the main one (thousands of cached modules) holds the
+  // live Flux stores, so collect every runtime and use the largest cache.
+  // Stores identify themselves via getName(). (Verified on live discord.com.)
+  let stores = null, lastTry = 0;
+  H.storeDiag = {};
+  function findStores() {
+    if (stores || Date.now() - lastTry < 15000) return stores;
+    lastTry = Date.now();
+    const D = H.storeDiag = {};
+    try {
+      const chunk = window.webpackChunkdiscord_app;
+      if (!chunk?.push) { D.result = 'no webpack chunk'; return null; }
+      const reqs = [];
+      chunk.push([[Symbol('dt')], {}, (r) => { reqs.push(r); }]);
+      try { chunk.pop(); } catch {}
+      const size = (r) => { try { return Object.keys(r.c || {}).length; } catch { return 0; } };
+      D.runtimes = reqs.map(size);
+      const main = reqs.reduce((x, y) => (size(y) > size(x) ? y : x), reqs[0]);
+      if (!main) { D.result = 'no runtime'; return null; }
+      const want = { UserStore: 'user', GuildMemberStore: 'member', VoiceStateStore: 'voice',
+        SelectedChannelStore: 'selected', ChannelStore: 'channels', GuildStore: 'guilds' };
+      const found = {};
+      for (const mod of Object.values(main.c)) {
+        const ex = mod?.exports;
+        if (!ex || (typeof ex !== 'object' && typeof ex !== 'function')) continue;
+        let vals; try { vals = [ex, ...Object.values(ex)]; } catch { continue; }
+        for (const v of vals) {
+          let n; try { n = v && typeof v.getName === 'function' ? v.getName() : null; } catch { continue; }
+          if (typeof n === 'string' && want[n] && !found[want[n]]) found[want[n]] = v;
+        }
+        if (Object.keys(found).length === Object.keys(want).length) break;
+      }
+      D.found = Object.keys(found);
+      if (found.user) { stores = found; D.result = 'ok'; } else D.result = 'UserStore not in main runtime';
+    } catch (e) { D.result = 'error ' + String(e).slice(0, 80); }
+    return stores;
+  }
+  // The server a user is in voice in (for their server nickname).
+  function voiceGuild(st, id) {
+    try {
+      const all = st.voice?.getAllVoiceStates?.() || {};
+      for (const g of Object.keys(all)) if (all[g]?.[id]) return g;
+    } catch {}
+    return location.pathname.match(/^\/channels\/(\d+)/)?.[1] || null;
+  }
+  // The voice channel this tab is connected to: {id, name, guild, guildName}.
+  let channel = null, channelAt = 0;
+  function currentChannel() {
+    if (Date.now() - channelAt < 2000) return channel;
+    channelAt = Date.now();
+    const st = findStores();
+    if (!st) return channel;
+    try {
+      const me = st.user.getCurrentUser()?.id;
+      const id = st.selected?.getVoiceChannelId?.() || (me && st.voice?.getVoiceStateForUser?.(me)?.channelId) || null;
+      if (!id) { channel = null; return channel; }
+      const ch = st.channels?.getChannel?.(id);
+      const g = ch?.guild_id ? st.guilds?.getGuild?.(ch.guild_id) : null;
+      channel = { id, name: clean(ch?.name) || (ch?.guild_id ? 'Voice channel' : 'Private call'), guild: ch?.guild_id || null, guildName: clean(g?.name) || null };
+    } catch (e) { H.storeDiag.chanErr = String(e).slice(0, 80); }
+    return channel;
+  }
+  H.currentChannel = currentChannel;
+
+  function storeName(id) {
+    const st = findStores();
+    if (!st) return null;
+    try {
+      const g = voiceGuild(st, id);
+      let nick = null;
+      try { nick = g ? st.member?.getNick?.(g, id) : null; } catch {}
+      const u = st.user.getUser(id);
+      if (!u) H.storeDiag.misses = (H.storeDiag.misses || 0) + 1;
+      const pick = [nick, u?.globalName, u?.username].find((x) => typeof x === 'string' && x.trim());
+      return clean(pick) || null;
+    } catch (e) { H.storeDiag.lastErr = String(e).slice(0, 80); return null; }
+  }
+
+  function scanNames() {
+    const avatarIds = new Map();   // id -> Set(names)
+    const reactIds = new Map();    // id -> Set(names)
+    const via = {}, unnamedRows = [];
+    for (const row of document.querySelectorAll(ROW)) {
+      const [id, how] = rowUserId(row), name = rowName(row);
+      if (!name) continue;
+      if (!id) { if (unnamedRows.length < 3) unnamedRows.push({ name, keys: fiberKeys(row) }); continue; }
+      const m = how === 'avatar' ? avatarIds : reactIds;
+      if (!m.has(id)) m.set(id, new Set());
+      m.get(id).add(name);
+    }
+    for (const [id, names] of avatarIds) if (names.size === 1) { idName.set(id, [...names][0]); via[id] = 'avatar'; }
+    for (const [id, names] of reactIds) {
+      if (names.size !== 1 || avatarIds.has(id)) continue;     // shared/conflicting: never guess
+      idName.set(id, [...names][0]); via[id] = 'react';
+    }
+    for (const r of readers.values()) {
+      if (r.userId && !idName.has(r.userId)) {
+        const n = storeName(r.userId);
+        if (n) { idName.set(r.userId, n); via[r.userId] = 'store'; }
+      }
+    }
+    H.nameVia = Object.assign(H.nameVia || {}, via);
+    H.unnamedRows = unnamedRows;
+  }
+  let lastSaved = '';
+  setInterval(() => {
+    const js = JSON.stringify(Object.fromEntries(idName));
+    if (js !== lastSaved) { lastSaved = js; window.postMessage({ __dtNames: JSON.parse(js) }, location.origin); }
+  }, 10000);
+  window.addEventListener('message', (e) => {
+    if (e.source !== window || !e.data?.__dtNamesInit) return;
+    for (const [id, n] of Object.entries(e.data.__dtNamesInit)) {
+      if (!idName.has(id) && typeof n === 'string') { idName.set(id, n); (H.nameVia = H.nameVia || {})[id] = 'memory'; }
+    }
+  });
+  setInterval(() => { try { scanNames(); } catch (e) { H.errors.push('names: ' + e); } }, 500);
+
+  // ---------------------------------------------------------------- audio
+  // Capture runs on the AUDIO thread (AudioWorklet loaded from a blob: URL,
+  // which Discord's CSP allows — verified on discord.com). The page's main
+  // thread is busy with Discord; a main-thread ScriptProcessor dropped ~60% of
+  // the audio once many people had joined, chopping speech into fragments.
+  // Chunks are stamped with the audio clock, so late delivery can't distort
+  // timing. Silence is dropped inside the worklet (only speech + a short tail
+  // is sent). Falls back to ScriptProcessor only if the worklet can't load.
+  const WORKLET = `
+  class DtCapture extends AudioWorkletProcessor {
+    constructor() { super(); this.buf = new Float32Array(3200); this.n = 0; this.t0 = 0; this.tail = 0; }
+    process(inputs) {
+      const ch = inputs[0] && inputs[0][0];
+      if (!ch) return true;
+      for (let i = 0; i < ch.length; i++) {
+        if (this.n === 0) this.t0 = currentTime + i / sampleRate;
+        this.buf[this.n++] = ch[i];
+        if (this.n === this.buf.length) {
+          let sq = 0; for (let k = 0; k < this.n; k++) sq += this.buf[k] * this.buf[k];
+          const rms = Math.sqrt(sq / this.n);
+          if (rms >= 0.002 || this.tail > 0) {
+            this.tail = rms >= 0.002 ? 4 : this.tail - 1;
+            const out = new Int16Array(this.n);
+            for (let k = 0; k < this.n; k++) { const v = Math.max(-1, Math.min(1, this.buf[k])); out[k] = v * 32767; }
+            this.port.postMessage({ t0: this.t0, rms, pcm: out.buffer }, [out.buffer]);
+          } else {
+            this.port.postMessage({ t0: this.t0, rms });        // silent: counted, not sent
+          }
+          this.n = 0;
+        }
+      }
+      return true;
+    }
+  }
+  registerProcessor('dt-capture', DtCapture);`;
+  let ctx = null, workletReady = null, wallAtZero = 0;
+  function audioCtx() {
+    if (!ctx) {
+      ctx = new AudioContext({ sampleRate: 16000 });   // Chrome resamples for us
+      workletReady = ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: 'application/javascript' })))
+        .then(() => (H.capture = 'worklet', true))
+        .catch((e) => { H.errors.push('worklet: ' + String(e).slice(0, 60)); H.capture = 'scriptprocessor'; return false; });
+    }
+    if (ctx.state !== 'running') ctx.resume().catch(() => {});
+    return ctx;
+  }
+  // Audio-clock time -> wall-clock ms (re-synced periodically).
+  function syncClock() {
+    if (!ctx) return;
+    const ts = ctx.getOutputTimestamp();
+    if (ts.contextTime) wallAtZero = performance.timeOrigin + ts.performanceTime - ts.contextTime * 1000;
+  }
+  setInterval(syncClock, 5000);
+  const wallOf = (ctxTime) => (wallAtZero || (syncClock(), wallAtZero) || Date.now() - ctx.currentTime * 1000) + ctxTime * 1000;
+  document.addEventListener('pointerdown', () => ctx && ctx.resume().catch(() => {}), true);
+
+  function emit(entry, t, pcm, rms) {
+    if (rms > 0.01) lastActive.set(entry.userId, Date.now());
+    window.postMessage({ __dtAudio: true, user: entry.userId, name: idName.get(entry.userId) || null, ch: currentChannel(), t, pcm }, location.origin, [pcm]);
+    H.chunks++;
+  }
+
+  async function readTrack(track, userId) {
+    if (readers.has(track.id)) { if (userId) readers.get(track.id).userId = userId; return; }
+    const c = audioCtx();
+    const entry = { userId };
+    readers.set(track.id, entry);
+    H.tracks++;
+    const stream = new MediaStream([track]);
+    // Chrome only pulls remote WebRTC audio into Web Audio if a media element
+    // also consumes the stream; a muted one is enough and plays nothing.
+    const sink = new Audio(); sink.muted = true; sink.srcObject = stream; sink.play().catch(() => {});
+    const src = c.createMediaStreamSource(stream);
+    const silent = c.createGain(); silent.gain.value = 0; silent.connect(c.destination);
+    let node;
+    if (await workletReady) {
+      node = new AudioWorkletNode(c, 'dt-capture', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+      node.port.onmessage = ({ data }) => {
+        H.frames = (H.frames || 0) + 1;
+        // Audio-clock seconds covered, per this track: a shortfall vs wall time = dropped audio.
+        entry.audioSec = (entry.audioSec || 0) + 0.2;
+        if (!data.pcm) { H.silent = (H.silent || 0) + 1; return; }
+        H.loudMax = Math.max(H.loudMax || 0, data.rms);
+        if (enabled && entry.userId) emit(entry, wallOf(data.t0), data.pcm, data.rms);
+      };
+    } else {
+      node = c.createScriptProcessor(4096, 1, 1);
+      let tail = 0;
+      node.onaudioprocess = (ev) => {
+        H.frames = (H.frames || 0) + 1;
+        if (!enabled || !entry.userId) return;
+        const x = ev.inputBuffer.getChannelData(0), n = x.length, out = new Int16Array(n);
+        let sq = 0;
+        for (let i = 0; i < n; i++) { const v = Math.max(-1, Math.min(1, x[i])); out[i] = v * 32767; sq += v * v; }
+        const rms = Math.sqrt(sq / n);
+        if (rms < 0.002) { if (!tail) return; tail--; } else tail = 3;
+        emit(entry, wallOf(ev.playbackTime ?? c.currentTime) - (n / c.sampleRate) * 1000, out.buffer, rms);
+      };
+    }
+    node.connect(silent);
+    // Only process while the person is actually sending audio: Discord mutes a
+    // track when someone leaves or goes quiet, and old tracks pile up otherwise.
+    let connected = false;
+    const attach = () => { if (!connected) { src.connect(node); connected = true; } };
+    const detach = () => { if (connected) { try { src.disconnect(node); } catch {} connected = false; } };
+    entry.startedAt = performance.now();
+    if (!track.muted) attach();
+    track.addEventListener('mute', detach);
+    track.addEventListener('unmute', attach);
+    entry.stop = () => { detach(); try { node.disconnect(); silent.disconnect(); } catch {} sink.srcObject = null; };
+    entry.isActive = () => connected;
+    track.addEventListener('ended', () => { entry.stop(); readers.delete(track.id); });
+  }
+
+  function onTrack(e) {
+    if (e.track.kind !== 'audio') return;
+    const sid = e.streams[0]?.id || '';
+    const m = sid.match(/^(\d{15,22})-(\d+)$/);
+    if (!m && H.badStreamIds.length < 5) H.badStreamIds.push(sid.slice(0, 40));
+    readTrack(e.track, m ? m[1] : null);
+  }
+
+  const OrigPC = window.RTCPeerConnection;
+  if (OrigPC) {
+    const Hooked = function (...args) {
+      const pc = new OrigPC(...args);
+      pcs.add(pc); H.pcs++;
+      pc.addEventListener('track', onTrack);
+      return pc;
+    };
+    Hooked.prototype = OrigPC.prototype;
+    Object.setPrototypeOf(Hooked, OrigPC);
+    window.RTCPeerConnection = Hooked;
+  }
+
+  const OrigWS = window.WebSocket;
+  const HookedWS = function (url, protocols) {
+    const ws = protocols === undefined ? new OrigWS(url) : new OrigWS(url, protocols);
+    if (/discord\.media/.test(String(url))) {
+      ws.addEventListener('message', (e) => {
+        if (typeof e.data !== 'string') return;
+        try { const m = JSON.parse(e.data); if (m.op === 5 && m.d?.ssrc && m.d.user_id) ssrcUser.set(m.d.ssrc, m.d.user_id); } catch {}
+      });
+    }
+    return ws;
+  };
+  HookedWS.prototype = OrigWS.prototype;
+  Object.setPrototypeOf(HookedWS, OrigWS);
+  window.WebSocket = HookedWS;
+
+  // Re-resolve track -> user via ssrc in case Discord reuses a transceiver.
+  setInterval(async () => {
+    for (const pc of pcs) {
+      if (pc.connectionState === 'closed') { pcs.delete(pc); continue; }
+      const st = await pc.getStats().catch(() => null);
+      st?.forEach((r) => {
+        if (r.type !== 'inbound-rtp' || r.kind !== 'audio') return;
+        const u = ssrcUser.get(r.ssrc), entry = readers.get(r.trackIdentifier);
+        if (u && entry) entry.userId = u;
+      });
+    }
+    H.live = [...readers.values()].map((r) => idName.get(r.userId) || r.userId);
+    H.names = Object.fromEntries(idName);
+  }, 2000);
+  setInterval(() => {
+    window.postMessage({ __dtStatus: true, s: {
+      v: H.version, loadedAt: H.loadedAt, pcs: H.pcs, tracks: H.tracks, capture: H.capture,
+      activeTracks: [...readers.values()].filter((r) => r.isActive?.()).length,
+      silent: H.silent || 0, loudMax: +(H.loudMax || 0).toFixed(3), ctxRate: ctx?.sampleRate, ctxBase: ctx ? +(ctx.baseLatency || 0).toFixed(3) : null, frames: H.frames || 0, chunks: H.chunks,
+      ctx: ctx ? ctx.state : 'none', enabled, live: H.live, names: H.names, nameVia: H.nameVia,
+      badStreamIds: H.badStreamIds, errors: [...new Set(H.errors)].slice(-5),
+      storeDiag: H.storeDiag, unnamedRows: H.unnamedRows, channel: currentChannel(),
+      unnamedLive: [...readers.values()].filter((r) => r.userId && !idName.has(r.userId)).map((r) => r.userId),
+    } }, location.origin);
+  }, 5000);
+
+  window.addEventListener('message', (e) => {
+    if (e.source === window && e.data?.__dtControl) { enabled = !!e.data.enabled; H.enabled = enabled; }
+  });
+})();

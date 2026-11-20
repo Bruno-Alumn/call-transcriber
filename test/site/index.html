@@ -1,0 +1,117 @@
+<!doctype html><meta charset="utf-8"><title>fake discord call</title>
+<div class="sidebarList_x">
+  <div class="voiceUser_YUoOxm" id="row-alice">
+    <div class="avatar_x" style="background-image: url(&quot;https://cdn.discordapp.com/avatars/111111111111111111/abc.webp&quot;);"></div>
+    <div class="usernameFont_x username_x">Alice</div>
+  </div>
+  <div class="voiceUser_YUoOxm" id="row-bob">
+    <div class="avatar_x" style="background-image: url(&quot;/assets/320d5a40d309f942.png&quot;);"></div>
+    <div class="usernameFont_x username_x">Bob</div>
+  </div>
+  <div class="voiceUser_YUoOxm" id="row-carol">
+    <div class="avatar_x" style="background-image: url(&quot;/assets/18e336a74a159cfd.png&quot;);"></div>
+    <div class="usernameFont_x username_x">Carol, Muted</div>
+  </div>
+  <div class="voiceUser_YUoOxm" id="row-dave">
+    <div class="avatar_x" style="background-image: url(&quot;/assets/18e336a74a159cfd.png&quot;);"></div>
+    <div class="usernameFont_x username_x">dave_99</div>
+  </div>
+</div>
+<button id="join">Join voice</button>
+<script>
+// ?nowl=1: make AudioWorklet unavailable to force the old ScriptProcessor capture.
+if (location.search.includes('nowl=1')) AudioWorklet.prototype.addModule = () => Promise.reject(new Error('disabled for test'));
+(() => {
+  // Mirrors live discord.com (verified): several rspack runtimes share the
+  // chunk array; only the main one caches the Flux stores; a small runtime and
+  // an i18n Proxy (answers any key) are decoys.
+  const users = { '111111111111111111': { username: 'alice_a', globalName: 'Alice' },
+                  '333333333333333333': { username: 'carol_k', globalName: 'Carol' },
+                  '444444444444444444': { username: 'dave_99', globalName: null } };
+  class Store { getName() { return this.constructor.displayName; } }
+  class UserStoreC extends Store { getUser(id) { return users[id]; } getCurrentUser() { return { id: '1', username: 'me' }; } }
+  UserStoreC.displayName = 'UserStore';
+  class MemberStoreC extends Store { getNick(g, id) { return g === '900000000000000001' && id === '333333333333333333' ? 'Carol K (nick)' : null; } getMember() { return null; } }
+  MemberStoreC.displayName = 'GuildMemberStore';
+  class VoiceStoreC extends Store { getAllVoiceStates() { return { '900000000000000001': { '333333333333333333': {}, '444444444444444444': {} } }; } }
+  VoiceStoreC.displayName = 'VoiceStateStore';
+  window.__fakeChannel = '700000000000000001';
+  const chans = { '700000000000000001': { id: '700000000000000001', name: 'Voice 4', guild_id: '900000000000000001' },
+                  '700000000000000002': { id: '700000000000000002', name: 'Late Night Lounge', guild_id: '900000000000000002' } };
+  class SelC extends Store { getVoiceChannelId() { return window.__fakeChannel; } getChannelId() { return null; } }
+  SelC.displayName = 'SelectedChannelStore';
+  class ChanC extends Store { getChannel(id) { return chans[id]; } }
+  ChanC.displayName = 'ChannelStore';
+  class GuildC extends Store { getGuild(id) { return { id, name: id.endsWith('2') ? 'Night Owls (test)' : 'WARDOGS (test)' }; } }
+  GuildC.displayName = 'GuildStore';
+  const intl = new Proxy({}, { get: () => () => ({ locale: 'en', ast: [] }) });
+  const main = { c: { 1: { exports: { Z: new UserStoreC() } }, 2: { exports: { default: new MemberStoreC() } }, 3: { exports: { A: new VoiceStoreC() } }, 6: { exports: { Z: new SelC() } }, 7: { exports: { Z: new ChanC() } }, 8: { exports: { default: new GuildC() } }, 4: { exports: { b: 1 } }, 5: { exports: { c: 2 } } } };
+  const small = { c: { 0: { exports: { A: intl } } } };
+  const chunk = []; chunk.push = function (c) { if (typeof c?.[2] === 'function') { c[2](main); c[2](small); } return Array.prototype.push.call(this, c); };
+  window.webpackChunkdiscord_app = chunk;
+})();
+// Mimic React: Bob's row has no id in its avatar, only in component props.
+document.getElementById('row-bob')['__reactFiber$test'] =
+  { memoizedProps: { className: 'x' }, return: { memoizedProps: { user: { id: '222222222222222222', username: 'bob' } } } };
+
+// Carol: no id in avatar or own props; a distant ancestor carries Alice's id.
+// The hook must NOT borrow it (she should come out as user-3333).
+let deep = { memoizedProps: { user: { id: '111111111111111111' } } };
+for (let i = 0; i < 9; i++) deep = { memoizedProps: { i }, return: deep };
+document.getElementById('row-carol')['__reactFiber$test'] = deep;
+
+// ?busy=1: keep the main thread ~75% busy, like a heavy Discord page.
+if (location.search.includes('busy=1')) setInterval(() => { const end = performance.now() + 150; while (performance.now() < end); }, 200);
+window.__harness = { status: 'waiting for click' };
+document.getElementById('join').onclick = () => (async () => {
+  const ctx = new AudioContext({ sampleRate: 48000 });
+  await ctx.resume();
+  const load = async (u) => ctx.decodeAudioData(await (await fetch(u)).arrayBuffer());
+  const [a, b, c3] = await Promise.all([load('a.wav'), load('b.wav'), load('c.wav')]);
+  const [d, b2] = await Promise.all([load('d.wav'), load('b2.wav')]);
+  const pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+  pc1.onicecandidate = (e) => e.candidate && pc2.addIceCandidate(e.candidate);
+  pc2.onicecandidate = (e) => e.candidate && pc1.addIceCandidate(e.candidate);
+  const rename = {};   // local stream id -> Discord-style "<userId>-<ssrc>"
+  const senders = {};
+  function addSpeaker(key, buf, at, discordId) {
+    const dest = ctx.createMediaStreamDestination();
+    const src = ctx.createBufferSource(); src.buffer = buf; src.connect(dest);
+    src.start(ctx.currentTime + at);
+    senders[key] = pc1.addTrack(dest.stream.getAudioTracks()[0], dest.stream);
+    rename[dest.stream.id] = discordId;
+  }
+  async function negotiate() {
+    const offer = await pc1.createOffer();
+    let sdp = offer.sdp;
+    for (const [from, to] of Object.entries(rename)) sdp = sdp.split(from).join(to);
+    await pc1.setLocalDescription(offer);
+    await pc2.setRemoteDescription({ type: 'offer', sdp });
+    const ans = await pc2.createAnswer();
+    await pc2.setLocalDescription(ans);
+    await pc1.setRemoteDescription(ans);
+  }
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Phase 1: Alice, Bob, Carol overlap.
+  addSpeaker('alice', a, 1.0, '111111111111111111-1001');
+  addSpeaker('bob', b, 2.0, '222222222222222222-1002');
+  addSpeaker('carol', c3, 2.5, '333333333333333333-1003');
+  await negotiate();
+  window.__harness = { status: 'phase1' };
+  // Phase 2: you move to another voice channel; Dave talks there.
+  await wait(9000);
+  window.__fakeChannel = '700000000000000002';
+  await wait(2500);
+  pc1.removeTrack(senders.bob);
+  addSpeaker('dave', d, 0.5, '444444444444444444-1004');
+  await negotiate();
+  window.__harness = { status: 'phase2' };
+  // Phase 3: Bob rejoins with a new ssrc and talks again.
+  await wait(6000);
+  addSpeaker('bob2', b2, 0.5, '222222222222222222-1005');
+  await negotiate();
+  window.__harness = { status: 'phase3' };
+  const ids = Object.values(rename);
+  window.__harness = { status: 'playing', ids };
+})().catch((e) => { window.__harness = { status: 'error', error: String(e) }; });
+</script>
