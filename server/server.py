@@ -105,9 +105,14 @@ class Segmenter:
             return
         t0 = self.cur[0][0]
         audio = np.concatenate([p for _, p in self.cur])
+        # (sample offset in `audio`, clock ms) per chunk: skipped silence means
+        # audio time != clock time, and lines are split back onto the clock.
+        marks, off = [], 0
+        for t, p in self.cur:
+            marks.append((off, t)); off += len(p)
         self.cur, self.silent_ms = [], 0
         if len(audio) >= SR * 0.4:
-            self.out.put((t0, audio, self.label, self.uid, self.channel))
+            self.out.put((t0, audio, self.label, self.uid, self.channel, marks))
 
 
 # ---------------------------------------------------------------- output
@@ -846,6 +851,83 @@ def pick_engine(requested: str) -> str:
     return "onnx"
 
 
+# ---------------------------------------------------------------- timing
+# One utterance can hold several sentences while someone else replies in
+# between. Split it at sentence ends and pauses, and put each part at the time
+# it was actually said, so the transcript interleaves who said what when.
+def ctc_pieces(ids, audio_len: int, decode, blank: int) -> list[tuple[str, float, float]]:
+    """Greedy CTC frames -> [(text added by this token, start s, end s)]."""
+    n = len(ids)
+    spf = audio_len / SR / max(1, n)                  # seconds per output frame
+    toks, prev = [], None
+    for i, t in enumerate(ids):
+        t = int(t)
+        if t != blank and t != prev:
+            toks.append([t, i, i])
+        elif t != blank and t == prev and toks:
+            toks[-1][2] = i
+        prev = t
+    out, before = [], ""
+    for k in range(len(toks)):
+        now = decode([x[0] for x in toks[:k + 1]])
+        out.append((now[len(before):] if now.startswith(before) else now[len(before):], toks[k][1] * spf, (toks[k][2] + 1) * spf))
+        before = now
+    return out
+
+
+def split_timed(pieces: list[tuple[str, float, float]], pause_s: float = 0.6) -> list[tuple[str, float, float]]:
+    """Group timed pieces into parts at sentence ends and pauses."""
+    parts, buf, start, end = [], "", None, 0.0
+    for i, (txt, a, b) in enumerate(pieces):
+        nxt = pieces[i + 1] if i + 1 < len(pieces) else None
+        if start is None and txt.strip():
+            start = a
+        buf += txt; end = b
+        sentence_end = buf.rstrip().endswith((".", "?", "!")) and (nxt is None or nxt[0][:1].isspace())
+        pause = nxt is not None and nxt[1] - b > pause_s and nxt[0][:1].isspace()
+        if (sentence_end or pause or nxt is None) and buf.strip():
+            parts.append([buf.strip(), start if start is not None else a, end]); buf, start = "", None
+    merged = []                                       # don't leave one-word fragments on their own
+    for p in parts:
+        if merged and len(p[0].split()) < 2 and not p[0].endswith(("?", "!")):
+            merged[-1][0] += " " + p[0]; merged[-1][2] = p[2]
+        else:
+            merged.append(p)
+    return [tuple(p) for p in merged]
+
+
+def split_by_text(text: str, audio_s: float) -> list[tuple[str, float, float]]:
+    """No timing from the model: split at sentence ends, time by share of characters."""
+    sents = [x for x in re.split(r"(?<=[.?!])\s+", text.strip()) if x]
+    if len(sents) <= 1:
+        return [(text.strip(), 0.0, audio_s)]
+    total, pos, out = sum(len(x) for x in sents), 0, []
+    for x in sents:
+        a = audio_s * pos / total; pos += len(x)
+        out.append((x, a, audio_s * pos / total))
+    merged = []
+    for p in out:
+        if merged and len(p[0].split()) < 2:
+            merged[-1] = (merged[-1][0] + " " + p[0], merged[-1][1], p[2])
+        else:
+            merged.append(p)
+    return merged
+
+
+def to_clock(marks: list[tuple[int, float]], sec: float) -> float:
+    """Audio seconds within an utterance -> clock ms (skipped silence restored)."""
+    if not marks:
+        return 0.0
+    pos = sec * SR
+    best = marks[0]
+    for m in marks:
+        if m[0] <= pos:
+            best = m
+        else:
+            break
+    return best[1] + (pos - best[0]) / SR * 1000
+
+
 def load_engine(engine: str, repo: str, language: str | None):
     """Returns run(audio float32 16 kHz) -> text."""
     if engine == "mlx" and "whisper" in repo.lower():      # Whisper: its own MLX package
@@ -857,6 +939,16 @@ def load_engine(engine: str, repo: str, language: str | None):
         from mlx_audio.stt import load
         model = load(repo)
         kw = {"language": language} if language and ("whisper" in repo.lower() or "qwen" in repo.lower()) else {}
+        if "turboctc" in repo.lower():                   # Granite 470M (CTC): word timing from its frames
+            feat = sys.modules[type(model).__module__].compute_features
+            blank = model.config.pad_token_id
+            tok = model._tokenizer
+            def run_ctc(audio):
+                x = feat(model._load_audio(mx.array(audio)), num_mel_bins=model.config.encoder_config.num_mel_bins)[None]
+                ids = np.array(mx.argmax(model(x)[0], axis=-1))
+                pieces = ctc_pieces(ids, len(audio), lambda t: tok.decode(t, skip_special_tokens=True), blank)
+                return {"text": "".join(p[0] for p in pieces).strip(), "pieces": pieces}
+            return run_ctc
         def run(audio):
             out = model.generate(mx.array(audio), **kw)
             return out.text if hasattr(out, "text") else out if isinstance(out, str) else ""
@@ -873,10 +965,15 @@ def load_engine(engine: str, repo: str, language: str | None):
         if "turboctc" in low:                                # Granite 470M (CTC)
             from transformers import AutoModelForCTC
             model = AutoModelForCTC.from_pretrained(repo, dtype=half).to(dev).eval()
+            blank = model.config.pad_token_id
+            tk = getattr(proc, "tokenizer", proc)
             def run(audio):
                 with torch.inference_mode():
                     inp = to_dev(proc([audio], sampling_rate=SR), model.dtype)
-                    return proc.batch_decode(model.generate(**inp), skip_special_tokens=True)[0]
+                    logits = model(**inp).logits[0]
+                ids = logits.argmax(-1).cpu().numpy()
+                pieces = ctc_pieces(ids, len(audio), lambda t: tk.decode(t, skip_special_tokens=True), blank)
+                return {"text": "".join(p[0] for p in pieces).strip(), "pieces": pieces}
             return run
         if "granite-speech" in low:                          # Granite 2B (speech LLM)
             from transformers import AutoModelForSpeechSeq2Seq
@@ -949,21 +1046,29 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None):
                 pass
             print("Model ready.", flush=True)
         try:
-            t0, audio, who, uid, ch = q.get(timeout=0.5)
+            item = q.get(timeout=0.5)
+            t0, audio, who, uid, ch = item[:5]
+            marks = item[5] if len(item) > 5 else [(0, t0)]
         except queue.Empty:
             continue
         try:
             started = time.time()
-            text = (model_run(audio) or "").strip()
+            res = model_run(audio) or ""
+            text = (res["text"] if isinstance(res, dict) else res).strip()
             hub.proc_s += time.time() - started
             hub.audio_s += len(audio) / SR
             hub.latency.append(max(0.0, time.time() - (t0 / 1000 + len(audio) / SR)))
         except Exception as e:  # keep running on one bad chunk
             print("transcribe error:", e, flush=True)
             continue
-        text = tidy(text)
-        if text and text.lower() not in HALLUCINATIONS:
-            writer.write(t0, len(audio) / SR, uid, who, text, ch)
+        if not text or tidy(text).lower() in HALLUCINATIONS:
+            continue
+        parts = split_timed(res["pieces"]) if isinstance(res, dict) and res.get("pieces") else split_by_text(text, len(audio) / SR)
+        for part, a, b in parts:
+            part = tidy(part)
+            if part and part.lower() not in HALLUCINATIONS:
+                start = to_clock(marks, a)
+                writer.write(start, max(0.3, (to_clock(marks, b) - start) / 1000), uid, who, part, ch)
 
 
 # ---------------------------------------------------------------- websocket
