@@ -20,33 +20,45 @@
 <button id="join">Join voice</button>
 <button id="share">Share screen</button><video id="sharevid" muted autoplay playsinline width="320"></video>
 <script>
+// ?set=b: a different call (other people, "Side room" channel) for a second account.
+// ?me=<id>: which account this window is signed in as.
+const Q = new URLSearchParams(location.search);
+const SET_B = Q.get('set') === 'b';
+const uid = (x) => (SET_B ? '5' + x.slice(1) : x);
+const CH_A1 = SET_B ? '700000000000000009' : '700000000000000001', CH_A2 = SET_B ? '700000000000000009' : '700000000000000002';
 // ?nowl=1: make AudioWorklet unavailable to force the old ScriptProcessor capture.
 if (location.search.includes('nowl=1')) AudioWorklet.prototype.addModule = () => Promise.reject(new Error('disabled for test'));
 (() => {
   // Mirrors live discord.com (verified): several rspack runtimes share the
   // chunk array; only the main one caches the Flux stores; a small runtime and
   // an i18n Proxy (answers any key) are decoys.
-  const users = { '111111111111111111': { username: 'alice_a', globalName: 'Alice' },
+  const users = { '511111111111111111': { username: 'erin', globalName: 'Erin' }, '522222222222222222': { username: 'frank', globalName: 'Frank' },
+                  '533333333333333333': { username: 'gina', globalName: 'Gina' }, '544444444444444444': { username: 'hank', globalName: 'Hank' },
+                  '111111111111111111': { username: 'alice_a', globalName: 'Alice' },
                   '333333333333333333': { username: 'carol_k', globalName: 'Carol' },
                   '444444444444444444': { username: 'dave_99', globalName: null } };
   class Store { getName() { return this.constructor.displayName; } }
-  class UserStoreC extends Store { getUser(id) { return users[id]; } getCurrentUser() { return { id: '1', username: 'me' }; } }
+  class UserStoreC extends Store { getUser(id) { return users[id]; } getCurrentUser() { return { id: Q.get('me') || '1', username: 'me' + (Q.get('me') || '') }; } }
   UserStoreC.displayName = 'UserStore';
   class MemberStoreC extends Store { getNick(g, id) { return g === '900000000000000001' && id === '333333333333333333' ? 'Carol K (nick)' : null; } getMember() { return null; } }
   MemberStoreC.displayName = 'GuildMemberStore';
   class VoiceStoreC extends Store { getVoiceStatesForChannel(ch) { return Object.fromEntries((window.__present?.[ch] || []).map((id) => [id, { userId: id, channelId: ch }])); } getAllVoiceStates() { return { '900000000000000001': { '333333333333333333': {}, '444444444444444444': {} } }; } }
   VoiceStoreC.displayName = 'VoiceStateStore';
-  window.__fakeChannel = '700000000000000001';
-  const chans = { '700000000000000001': { id: '700000000000000001', name: 'Voice 4', guild_id: '900000000000000001' },
+  window.__fakeChannel = Q.get('ch') || CH_A1;
+  const chans = { '700000000000000009': { id: '700000000000000009', name: 'Side room', guild_id: '900000000000000001', type: 2 },
+                  '700000000000000001': { id: '700000000000000001', name: 'Voice 4', guild_id: '900000000000000001', type: 2 },
                   '700000000000000002': { id: '700000000000000002', name: 'Late Night Lounge', guild_id: '900000000000000002' } };
   class SelC extends Store { getVoiceChannelId() { return window.__fakeChannel; } getChannelId() { return null; } }
   SelC.displayName = 'SelectedChannelStore';
   class ChanC extends Store { getChannel(id) { return chans[id]; } }
   ChanC.displayName = 'ChannelStore';
-  class GuildC extends Store { getGuild(id) { return { id, name: id.endsWith('2') ? 'Night Owls (test)' : 'Stone Harbor (test)' }; } }
+  class GuildC extends Store { getGuild(id) { return { id, name: id.endsWith('2') ? 'Night Owls (test)' : 'Stone Harbor (test)' }; }
+    getGuilds() { return { '900000000000000001': this.getGuild('900000000000000001'), '900000000000000002': this.getGuild('900000000000000002') }; } }
+  class GuildChanC extends Store { getChannels(g) { return { id: g, SELECTABLE: [], VOCAL: Object.values(chans).filter((c) => c.guild_id === g).map((c) => ({ channel: { ...c, type: 2 }, comparator: 0 })), count: 1 }; } }
+  GuildChanC.displayName = 'GuildChannelStore';
   GuildC.displayName = 'GuildStore';
   const intl = new Proxy({}, { get: () => () => ({ locale: 'en', ast: [] }) });
-  const main = { c: { 1: { exports: { Z: new UserStoreC() } }, 2: { exports: { default: new MemberStoreC() } }, 3: { exports: { A: new VoiceStoreC() } }, 6: { exports: { Z: new SelC() } }, 7: { exports: { Z: new ChanC() } }, 8: { exports: { default: new GuildC() } }, 4: { exports: { b: 1 } }, 5: { exports: { c: 2 } } } };
+  const main = { c: { 1: { exports: { Z: new UserStoreC() } }, 2: { exports: { default: new MemberStoreC() } }, 3: { exports: { A: new VoiceStoreC() } }, 6: { exports: { Z: new SelC() } }, 7: { exports: { Z: new ChanC() } }, 8: { exports: { default: new GuildC() } }, 9: { exports: { Z: new GuildChanC() } }, 4: { exports: { b: 1 } }, 5: { exports: { c: 2 } } } };
   const small = { c: { 0: { exports: { A: intl } } } };
   const chunk = []; chunk.push = function (c) { if (typeof c?.[2] === 'function') { c[2](main); c[2](small); } return Array.prototype.push.call(this, c); };
   window.webpackChunkdiscord_app = chunk;
@@ -105,26 +117,27 @@ document.getElementById('join').onclick = () => (async () => {
   }
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   // Phase 1: Alice, Bob, Carol overlap.
-  addSpeaker('alice', a, 1.0, '111111111111111111-1001');
-  addSpeaker('bob', b, 2.0, '222222222222222222-1002');
-  addSpeaker('carol', c3, 2.5, '333333333333333333-1003');
+  addSpeaker('alice', a, 1.0, uid('111111111111111111') + '-1001');
+  addSpeaker('bob', b, 2.0, uid('222222222222222222') + '-1002');
+  addSpeaker('carol', c3, 2.5, uid('333333333333333333') + '-1003');
   await negotiate();
-  window.__present = { '700000000000000001': ['111111111111111111', '222222222222222222', '333333333333333333'], '700000000000000002': ['444444444444444444'] };
+  window.__present = { [CH_A1]: ['111111111111111111', '222222222222222222', '333333333333333333'].map(uid), [CH_A2]: ['444444444444444444'].map(uid) };
+  if (SET_B) window.__present[CH_A1] = ['111111111111111111', '222222222222222222', '333333333333333333', '444444444444444444'].map(uid);
   window.__harness = { status: 'phase1' };
   // Phase 2: you move to another voice channel; Dave talks there.
   await wait(9000);
-  window.__fakeChannel = '700000000000000002';
+  window.__fakeChannel = Q.get('ch') || CH_A2;
   await wait(2500);
   pc1.removeTrack(senders.bob);
-  addSpeaker('dave', d, 0.5, '444444444444444444-1004');
+  addSpeaker('dave', d, 0.5, uid('444444444444444444') + '-1004');
   await negotiate();
-  window.__present = { '700000000000000002': ['444444444444444444'] };
+  if (!SET_B) window.__present = { [CH_A2]: ['444444444444444444'] };
   window.__harness = { status: 'phase2' };
   // Phase 3: Bob rejoins with a new ssrc and talks again.
   await wait(6000);
-  addSpeaker('bob2', b2, 0.5, '222222222222222222-1005');
+  addSpeaker('bob2', b2, 0.5, uid('222222222222222222') + '-1005');
   await negotiate();
-  window.__present = { '700000000000000002': ['444444444444444444', '222222222222222222'] };
+  if (!SET_B) window.__present = { [CH_A2]: ['444444444444444444', '222222222222222222'] };
   window.__harness = { status: 'phase3' };
   const ids = Object.values(rename);
   window.__harness = { status: 'playing', ids };

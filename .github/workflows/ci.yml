@@ -17,7 +17,7 @@ jobs:
         with: { node-version: 22 }
       - name: App + dashboard JavaScript
         run: |
-          for f in app/desktop/*.js test/app-test.js; do node --check "$f"; done
+          for f in app/desktop/*.js test/app-test.js test/multi-test.js; do node --check "$f"; done
           node -e "const s=require('fs').readFileSync('server/dashboard/index.html','utf8'); new Function(s.slice(s.indexOf('<script>')+8, s.lastIndexOf('</script>'))); console.log('dashboard ok')"
       - name: Python
         run: python3 -m py_compile server/server.py app/windows/call_transcriber.pyw test/server_e2e.py
@@ -59,6 +59,10 @@ jobs:
         shell: bash
         env: { SERVER_ARGS: "--engine onnx" }
         run: node test/app-test.js "$RUNNER_TEMP/app-test"
+      - name: Multi-account test (two calls at once, shared channel, listener mic, transcribe a channel)
+        shell: bash
+        env: { SERVER_ARGS: "--engine onnx" }
+        run: node test/multi-test.js "$RUNNER_TEMP/multi-test"
 
   build-mac:
     name: Build macOS app + Windows package

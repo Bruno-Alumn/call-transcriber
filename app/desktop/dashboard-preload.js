@@ -6,8 +6,14 @@ contextBridge.exposeInMainWorld('ctApp', {
   server: (action) => ipcRenderer.send('ct:server', String(action)),
   save: (name, content) => ipcRenderer.invoke('ct:save', String(name), String(content)),
   relaunch: (opts) => ipcRenderer.send('ct:relaunch', { rebuild: !!opts?.rebuild, deps: !!opts?.deps, app: !!opts?.app }),
-  openDiscord: () => ipcRenderer.send('ct:open-discord'),
+  openDiscord: (id) => ipcRenderer.send('ct:open-discord', id == null ? undefined : String(id)),
   setPaused: (on) => ipcRenderer.send('ct:pause', !!on),
-  setMuted: (on) => ipcRenderer.send('ct:mute', !!on),
+  setMuted: (on, id) => ipcRenderer.send('ct:mute', !!on, id == null ? undefined : String(id)),
+  // accounts (several Discord accounts, one window each)
+  accounts: () => ipcRenderer.invoke('ct:accounts'),
+  transcribe: (guildId, channelId) => ipcRenderer.invoke('ct:transcribe', String(guildId), String(channelId)),
+  addAccount: () => ipcRenderer.invoke('ct:add-account'),
+  removeAccount: (id) => ipcRenderer.invoke('ct:remove-account', String(id)),
+  setRole: (id, role) => ipcRenderer.invoke('ct:set-role', String(id), String(role)),
   onState: (fn) => ipcRenderer.on('ct:app-state', (_e, s) => fn(s)),
 });

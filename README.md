@@ -16,6 +16,10 @@ Earshot is a desktop app for macOS and Windows. Join a voice channel in its buil
   - **History:** past calls grouped by server and channel, with search across all of them. Right-click a call to archive, export or delete it.
 - **Compact mode.** The transcript and every panel on one screen, no scrolling. ⌘⇧K / Ctrl+Shift+K.
 - **Share it into the call.** Screen sharing from the call window opens a picker with a compact view made for sharing: live transcript and stats, none of your controls.
+- **Several accounts, several calls.** Add more accounts, each with its own call window and sign-in.
+  - **Main and listener accounts:** your main account uses your microphone. Listener accounts get a silent microphone and start with their sound off, and everything they hear is still transcribed.
+  - **Transcribe a channel** (⌘⇧T / Ctrl+Shift+T): pick a voice channel any of your accounts can see. The next free account opens it with Join Voice highlighted, and you click Join. Earshot never joins, leaves or mutes for you.
+  - **Calls side by side:** each call gets its own entry in the sidebar. If two of your accounts are in the same channel only one transcribes it, and your own accounts never count as other people.
 - **Personality reads.** Click **Read** next to anyone in Talk time, or right-click their name, for a light-hearted sketch of them: a one-liner, a rough Big Five guess and quotes as evidence. In compact mode the top three speakers still in the call get a one-line read that refreshes every 10 minutes. A small local model writes them (Liquid AI LFM3 1.7B, about 2 GB, downloaded on first use). Needs Apple Silicon or an NVIDIA GPU.
 - **Mute the call for yourself.** Turn the sound off on your end and Earshot keeps transcribing (⌘⇧M / Ctrl+Shift+M).
 - **Pick your speech model.** All of them run locally and you can switch mid-call:

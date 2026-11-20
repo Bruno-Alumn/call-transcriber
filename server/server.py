@@ -191,16 +191,22 @@ def build_calls(day: str, recs: list[dict]) -> list[dict]:
     """Split a day into calls: a new call starts when the voice channel
     changes or after 15 quiet minutes."""
     calls: list[dict] = []
+    open_by_ch: dict = {}              # several calls can run at once, one per voice channel
     for r in recs:
-        cur = calls[-1] if calls else None
         ch = r.get("ch")
+        cur = open_by_ch.get(ch) if ch else (calls[-1] if calls else None)
+        if ch and cur is None and calls and not calls[-1]["ch"] and r["t"] - calls[-1]["end"] < GAP_MS:
+            cur = calls[-1]                # older lines without a channel: the call they belong to
         if cur and r["t"] - cur["end"] < GAP_MS and (not ch or not cur["ch"] or ch == cur["ch"]):
             cur["lines"].append(r); cur["end"] = max(cur["end"], r["end"])
             if ch and not cur["ch"]:
                 cur.update(ch=ch, chName=r.get("chName"), guild=r.get("guild"), guildName=r.get("guildName"))
+                open_by_ch[ch] = cur
         else:
             calls.append({"day": day, "start": r["t"], "end": r["end"], "ch": ch, "chName": r.get("chName"),
                           "guild": r.get("guild"), "guildName": r.get("guildName"), "lines": [r]})
+            if ch:
+                open_by_ch[ch] = calls[-1]
     out = []
     for c in calls:
         talk: dict[str, float] = {}
@@ -406,7 +412,11 @@ class Hub:
         self.clients: set = set()
         self.extensions = 0
         self.ext_sockets: set = set()
-        self.ext_reports: dict = {}       # connection -> (status, time): Chrome and the app can both be connected
+        self.ext_reports: dict = {}       # connection -> (status, time)
+        # One entry per Discord window (account): who it is and whether it is the
+        # one transcribing its channel (two of your accounts in one channel must
+        # not transcribe everything twice).
+        self.conns: dict = {}             # ws -> {account, role, userId, label, since, capturing}
         self.res: dict = {}
         self.audio_s = self.proc_s = 0.0             # transcription throughput
         self.latency: deque = deque(maxlen=50)        # s from end of speech to text
@@ -428,6 +438,53 @@ class Hub:
         except OSError:
             pass
 
+    def own_ids(self) -> set:
+        ids = {c.get("userId") for c in self.conns.values() if c.get("userId")}
+        for st, _ in self.ext_reports.values():
+            if (st.get("me") or {}).get("id"):
+                ids.add(st["me"]["id"])
+        return ids
+
+    def elect(self) -> list:
+        """Per voice channel, pick the one connection that transcribes it:
+        a listener account before your main one, then whoever joined first.
+        Returns [(ws, on)] for connections whose role changed."""
+        now, groups = time.time(), {}
+        for ws, c in self.conns.items():
+            st, at = self.ext_reports.get(ws, ({}, 0.0))
+            ch = (st.get("channel") or {}).get("id") if now - at < 15 and st.get("pcs") and st.get("tracks") else None
+            if ch:
+                groups.setdefault(ch, []).append((ws, c))
+        chosen, grouped = set(), set()
+        for members in groups.values():
+            members.sort(key=lambda m: (m[1].get("role") != "listener", m[1]["since"]))
+            chosen.add(members[0][0])
+            grouped.update(m[0] for m in members)
+        changes = []
+        for ws, c in self.conns.items():
+            want = ws in chosen or ws not in grouped
+            if c["capturing"] != want:
+                c["capturing"] = want
+                changes.append((ws, want))
+        return changes
+
+    def accounts_state(self, now: float) -> list:
+        own, out = self.own_ids(), []
+        for ws, c in self.conns.items():
+            st, at = self.ext_reports.get(ws, ({}, 0.0))
+            fresh = now - at < 15
+            me = st.get("me") or {}
+            self_st = (me.get("self") or {}) if fresh else {}
+            out.append({"account": c.get("account"), "role": c.get("role"), "label": c.get("label") or me.get("name"),
+                        "userId": c.get("userId") or me.get("id"), "capturing": c["capturing"],
+                        "inCall": fresh and bool(st.get("pcs")) and bool(st.get("tracks")),
+                        "channel": st.get("channel") if fresh else None,
+                        "streams": len([x for x in (st.get("liveIds") or []) if x not in own]) if fresh else 0,
+                        "present": [x for x in (st.get("liveIds") or []) if x not in own] if fresh else [],
+                        "deafened": bool(self_st.get("deaf") or self_st.get("selfDeaf")),
+                        "lastReport": int(at * 1000) if at else None})
+        return out
+
     def state(self) -> dict:
         now = time.time()
         ppl = [{"user": uid, "name": p.label, "talking": bool(p.cur) and now - p.last_seen < 1.5,
@@ -447,13 +504,14 @@ class Hub:
                "named": sum(1 for n in (st.get("live") or []) if not re.fullmatch(r"\d{15,22}", str(n))),
                "audio": st.get("ctx"), "hook": st.get("v"), "errors": st.get("errors") or [],
                "channel": st.get("channel") if age < 15 else None,
-               "present": (st.get("liveIds") or []) if age < 15 else [],   # user ids in the voice call now
+               "present": [x for x in (st.get("liveIds") or []) if x not in self.own_ids()] if age < 15 else [],   # in the call now (not your accounts)
                "client": st.get("client") or "chrome",           # "app": Discord inside the desktop app
                "lastReport": int(at * 1000) if at else None}
         return {"type": "state", "model": self.model, "engine": getattr(self, "engine", None), "modelReady": self.model_ready,
                 "modelId": getattr(self, "model_id", None), "modelLoading": getattr(self, "loading", None),
                 "modelError": getattr(self, "model_error", None),
-                "extensions": self.extensions, "ext": ext, "people": ppl, "queue": self.queue.qsize() if self.queue else 0,
+                "extensions": self.extensions, "ext": ext, "people": ppl,
+                "accounts": self.accounts_state(now), "own": sorted(self.own_ids()), "queue": self.queue.qsize() if self.queue else 0,
                 "uptime": int(now - self.started), "now": int(now * 1000), "pid": os.getpid(),
                 "res": {**self.res, "speed": round(self.audio_s / self.proc_s, 1) if self.proc_s else None,
                         "latency": round(sum(self.latency) / len(self.latency), 2) if self.latency else None,
@@ -1115,6 +1173,15 @@ async def main():
         people = hub.people
         hub.extensions += 1
         hub.ext_sockets.add(ws)
+        conn = hub.conns[ws] = {"account": None, "role": "main", "userId": None, "label": None,
+                                "since": time.time(), "capturing": True}
+
+        async def reelect():
+            for w, on in hub.elect():
+                try:
+                    await w.send(json.dumps({"type": "capture", "on": on}))
+                except Exception:
+                    pass
         last_status = time.time()
         print("Discord window connected.", flush=True)
 
@@ -1132,6 +1199,8 @@ async def main():
                     continue
                 ev = json.loads(msg)
                 if ev["type"] == "track-audio":
+                    if not conn["capturing"]:          # another of your accounts is transcribing this channel
+                        continue
                     uid = ev["user"]
                     if uid not in people:
                         people[uid] = Segmenter(q, args.threshold, label=f"user-{uid[-4:]}", uid=uid)
@@ -1142,8 +1211,15 @@ async def main():
                         people[uid].channel = ev["ch"]
                     pcm = np.frombuffer(base64.b64decode(ev["pcm"]), dtype="<i2").astype(np.float32) / 32768.0
                     people[uid].push(ev["t"], pcm)
+                elif ev["type"] == "hello":
+                    conn.update(account=ev.get("account"), role="listener" if ev.get("role") == "listener" else "main",
+                                userId=ev.get("userId") or conn["userId"], label=ev.get("label") or conn["label"])
+                    await reelect()
                 elif ev["type"] == "hook-status":
                     hub.ext_reports[ws] = ({**ev["s"], "paused": ev.get("paused")}, time.time())
+                    if ev["s"].get("role") in ("main", "listener"):
+                        conn["role"] = ev["s"]["role"]
+                    await reelect()
                     with (TRANSCRIPTS.parent / "status.log").open("a", encoding="utf-8") as f:
                         f.write(json.dumps({"t": dt.datetime.now().isoformat(timespec="seconds"),
                                             **ev["s"], "paused": ev.get("paused")}) + "\n")
@@ -1156,6 +1232,12 @@ async def main():
             hub.extensions -= 1
             hub.ext_sockets.discard(ws)
             hub.ext_reports.pop(ws, None)
+            hub.conns.pop(ws, None)
+            for w, on in hub.elect():          # someone else in that channel takes over
+                try:
+                    await w.send(json.dumps({"type": "capture", "on": on}))
+                except Exception:
+                    pass
             flusher.cancel()
             for p in people.values():
                 p.flush()

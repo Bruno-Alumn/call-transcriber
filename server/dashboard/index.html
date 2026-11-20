@@ -332,6 +332,23 @@ body.compact .col { grid-template-rows: auto auto minmax(0, 1fr) minmax(0, 1fr);
 .pers .ps { font-size: 12px; color: var(--text-primary); margin-top: 3px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .pers .pt { font-size: 11px; color: var(--text-muted); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pers-empty { grid-column: 1 / -1; color: var(--text-muted); font-size: 12px; padding: 2px 0 4px; }
+/* accounts + transcribe picker */
+.accts { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+.acct { border: 1px solid var(--grid); border-radius: 4px; padding: 6px 8px; }
+.acct.bad { border-color: var(--bad); }
+.acct .an { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.acct .ar { font-weight: 500; font-size: 10.5px; color: var(--text-muted); border: 1px solid var(--grid); border-radius: 3px; padding: 0 4px; }
+.acct .as { color: var(--text-secondary); font-size: 11.5px; margin-top: 2px; }
+.acct.bad .as { color: var(--bad); }
+.acct .ab { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.acct .ab button { flex: none; padding: 3px 8px; font-size: 11.5px; }
+.pop { max-height: calc(100vh - 80px); overflow-y: auto; }
+.tr .tg { font-size: 11.5px; font-weight: 600; color: var(--text-muted); margin: 10px 0 4px; }
+.tr .tc { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; font: inherit; font-size: 13px; color: var(--text-primary);
+  background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 6px 8px; cursor: pointer; }
+.tr .tc:hover { border-color: var(--border); background: var(--surface-2); }
+.tr .tc svg { width: 14px; height: 14px; color: var(--text-muted); flex: none; }
+.tr .tc em { margin-left: auto; font-style: normal; font-size: 11.5px; color: var(--text-muted); }
 /* ---------- house style: flat, dense, typographic (overrides the defaults above) */
 :root { --radius: 6px; --shadow: none; --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; }
 body { font-size: 13.5px; }
@@ -500,6 +517,7 @@ const STOP = new Set(("a an the and or but if so to of in on at for with from by
 let compact = false;   // one-screen layout (see setCompact)
 // ?view=share: the window the app shares into Discord — compact, read-only, nothing private
 const SHARE = new URLSearchParams(location.search).get('view') === 'share';
+const SHARE_CH = SHARE ? new URLSearchParams(location.search).get('ch') || '' : '';
 if (SHARE) document.documentElement.classList.add('share');
 let allLines = [], lines = [], names = {}, filter = null, query = '', liveState = null, range = 60;
 const GAP = 15 * 60000;   // 15 quiet minutes = a new call session
@@ -772,6 +790,10 @@ function extSummary(st) {
   if (appState.paused || e.paused) return ['warn', 'Discord · paused'];
   if (!e.discordTab) return ['warn', 'Discord · loading'];
   if (!e.inCall) return ['ok', 'Discord · not in a call'];
+  const inCalls = (st.accounts || []).filter((a) => a.inCall);
+  const deaf = inCalls.filter((a) => a.deafened).length;
+  if (deaf) return ['warn', `Discord · ${deaf} deafened, not transcribing`];
+  if (inCalls.length > 1) return ['ok', `Discord · ${new Set(inCalls.map((a) => a.channel?.id)).size} calls · ${inCalls.filter((a) => a.capturing).reduce((n, a) => n + a.streams, 0)} people`];
   return ['ok', `Discord · ${e.streams} in call`];
 }
 function renderState() {
@@ -845,7 +867,8 @@ function popHtml(which) {
       <dt>Last report</dt><dd>${e.lastReport ? ago(e.lastReport) : '—'}</dd>
       ${e.errors?.length ? `<dt>Errors</dt><dd>${esc(e.errors.join('; ')).slice(0, 120)}</dd>` : ''}</dl>
       <div class="hint">${hint}</div>
-      ${desk ? `<div class="btns"><button data-desk="discord">Show Discord</button><button data-desk="mute">${appState.muted ? 'Unmute call' : 'Mute call'}</button><button data-desk="pause">${appState.paused ? 'Resume' : 'Pause'}</button></div>` : ''}`;
+      ${desk ? `<div class="btns"><button data-desk="discord">Show Discord</button><button data-desk="mute">${appState.muted ? 'Unmute call' : 'Mute call'}</button><button data-desk="pause">${appState.paused ? 'Resume' : 'Pause'}</button></div>` : ''}
+      ${desk && desk.accounts ? accountsHtml() : ''}`;
   }
   if (which === 'model') {
     if (!st) return `<h3>Speech model</h3><div class="hint">Waiting for the server.</div>`;
@@ -926,7 +949,11 @@ function renderBanner() {
     b.innerHTML = `<span>✓ Updated to <b>v${esc(applied.version)}</b>.</span><span class="notes">${inApp ? 'Restart the app to finish.' : 'Restart the app (or the server) to finish.'}</span>
       ${inApp ? '<button id="b-restart">Restart now</button>' : ''}`;
     b.style.display = 'flex';
-    $('#b-restart') && ($('#b-restart').onclick = () => { $('#b-restart').textContent = 'Restarting…'; appRelaunch(applied); });
+    $('#b-restart') && ($('#b-restart').onclick = async () => {
+      const n = (liveState?.accounts || []).filter((a) => a.inCall).length || (liveState?.ext?.inCall ? 1 : 0);
+      if (n && !(await confirmBox('Restart now?', `Restarting reloads Discord, which drops ${n === 1 ? 'the call you are in' : 'all ' + n + ' calls you are in'}.`, 'You can also restart later, after the call.', 'Restart now'))) return;
+      $('#b-restart').textContent = 'Restarting…'; appRelaunch(applied);
+    });
     return;
   }
   if (upd?.available && updDismissed !== upd.latest) {
@@ -1021,9 +1048,13 @@ $('#export').onclick = () => { const c = currentCall(); if (c) chooseFormat({ la
 let calls = [], selected = 'live';          // call id, or 'live' = follow the current call
 const dayCache = new Map();                 // day -> lines
 const CH_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 2.5a.6.6 0 0 1 1 .45v10.1a.6.6 0 0 1-1 .45L4.9 10.8H2.6A.6.6 0 0 1 2 10.2V5.8c0-.33.27-.6.6-.6h2.3L8 2.5Zm3.1 2.2a.6.6 0 0 1 .85.05 5 5 0 0 1 0 6.5.6.6 0 1 1-.9-.8 3.8 3.8 0 0 0 0-4.9.6.6 0 0 1 .05-.85Z"/></svg>';
-const isLiveCall = (c) => !!c && c === calls[0] && c.day === today() && Date.now() - c.end < GAP;
+// Several calls can be live at once (one per account/voice channel).
+const liveChannels = () => new Set([...(liveState?.accounts || []).filter((a) => a.inCall && a.channel?.id).map((a) => a.channel.id),
+  ...(liveState?.ext?.inCall && liveState.ext.channel?.id ? [liveState.ext.channel.id] : [])]);
+const isLiveCall = (c) => !!c && c.day === today() && Date.now() - c.end < GAP && (c === calls[0] || (!!c.ch && liveChannels().has(c.ch)));
+const liveCallCount = () => calls.filter(isLiveCall).length;
 const currentCall = () => selected === 'live' ? calls[0] : calls.find((c) => c.id === selected);
-const isToday = () => selected === 'live' && isLiveCall(calls[0]);    // "viewing live" for the charts
+const isToday = () => isLiveCall(currentCall());    // "viewing live" for the charts
 const chTitle = (c) => c?.chName || (c ? 'Unknown channel' : '');
 function dayLabel(d) {
   const t = today(); const y = new Date(Date.now() - 864e5); const ys = y.getFullYear() + '-' + String(y.getMonth()+1).padStart(2,'0') + '-' + String(y.getDate()).padStart(2,'0');
@@ -1149,6 +1180,68 @@ $('#calls').addEventListener('contextmenu', (e) => {
 document.addEventListener('click', (e) => { if (!$('#ctx').contains(e.target)) closeCtx(); });
 addEventListener('keydown', (e) => { if (e.key === 'Escape') closeCtx(); });
 addEventListener('blur', closeCtx);
+// ------------------------------------------------------------ accounts (desktop app)
+function accountLine(a) {
+  const st = !a.open ? 'not open' : !a.signedIn ? 'sign in to Discord in its window'
+    : a.deafened ? 'deafened, nothing is being heard' : a.inCall ? `${esc(a.channel?.name || 'in a call')}${a.channel?.guildName ? ' · ' + esc(a.channel.guildName) : ''} · ${a.capturing ? 'transcribing' : 'standing by (another account transcribes it)'}`
+    : a.hint ? 'click Join Voice in its window' : 'free';
+  return `<div class="acct${a.deafened ? ' bad' : ''}"><div class="an">${esc(a.label)}<span class="ar">${a.role === 'main' ? 'main' : 'listener'}</span></div>
+    <div class="as">${st}</div>
+    <div class="ab"><button data-acct-show="${esc(a.id)}">Show</button>${a.role === 'listener' ? `<button data-acct-mute="${esc(a.id)}" data-on="${a.muted ? 0 : 1}">${a.muted ? 'Sound on' : 'Sound off'}</button><button data-acct-main="${esc(a.id)}" title="Use your real microphone with this account">Make main</button><button data-acct-rm="${esc(a.id)}" class="danger">Remove</button>` : ''}</div></div>`;
+}
+function accountsHtml() {
+  const list = appState.accounts || [];
+  return `<h3 style="margin-top:14px">Accounts</h3><div class="accts">${list.map(accountLine).join('')}</div>
+    <div class="btns"><button data-desk="transcribe">Transcribe a channel…</button><button data-desk="add">Add account</button></div>
+    <div class="hint">Listener accounts have no microphone and start with sound off. Each account signs in once in its own window.</div>`;
+}
+document.addEventListener('click', async (e) => {
+  const t = e.target.closest?.('button'); if (!t || !desk?.accounts) return;
+  if (t.dataset.desk === 'add') { closePop?.(); await desk.addAccount(); }
+  if (t.dataset.desk === 'transcribe') { closePop?.(); openTranscribe(); }
+  if (t.dataset.acctShow) desk.openDiscord(t.dataset.acctShow);
+  if (t.dataset.acctMute) desk.setMuted(t.dataset.on === '0' ? false : true, t.dataset.acctMute);
+  if (t.dataset.acctMain) await desk.setRole(t.dataset.acctMain, 'main');
+  if (t.dataset.acctRm) await desk.removeAccount(t.dataset.acctRm);
+});
+// "Transcribe a channel": pick a voice channel; the next free account opens it with Join Voice highlighted.
+async function openTranscribe() {
+  if (!desk?.accounts) return;
+  const info = await desk.accounts();
+  const bg = $('#modal'), box = bg.firstElementChild;
+  box.classList.add('persona');
+  const close = () => { bg.style.display = 'none'; box.classList.remove('persona'); removeEventListener('keydown', key); };
+  const key = (e) => { if (e.key === 'Escape') close(); };
+  addEventListener('keydown', key);
+  bg.onclick = (e) => { if (e.target === bg) close(); };
+  const busy = new Map((info.accounts || []).filter((a) => a.inCall && a.channel).map((a) => [a.channel.id, a]));
+  const render = (q = '') => {
+    const ql = q.toLowerCase();
+    const gs = (info.guilds || []).map((g) => ({ ...g, channels: g.channels.filter((c) => !ql || (g.name + ' ' + c.name).toLowerCase().includes(ql)) })).filter((g) => g.channels.length);
+    const free = (info.accounts || []).filter((a) => !a.inCall).length;
+    box.innerHTML = `<h3>Transcribe a channel</h3><div class="psub">${free} of ${(info.accounts || []).length} accounts free · the app opens the channel, you click Join Voice</div>
+      <input type="search" id="tq" placeholder="Search servers and channels…" value="${esc(q)}" style="width:100%;margin-bottom:8px">
+      <div class="pbody tr">${gs.map((g) => `<div class="tg">${esc(g.name)}</div>${g.channels.map((c) => {
+        const b = busy.get(c.id);
+        return `<button class="tc" data-g="${esc(g.id)}" data-c="${esc(c.id)}">${CH_ICON}<span>${esc(c.name)}</span>${b ? `<em>${esc(b.label)} is ${b.capturing ? 'transcribing' : 'in'} it</em>` : ''}</button>`;
+      }).join('')}`).join('') || `<p>${(info.guilds || []).length ? 'No matches.' : 'No servers yet. Each account lists its servers a few seconds after it signs in.'}</p>`}</div>
+      <div class="pnote" id="tmsg"></div>
+      <div class="btns"><button data-a="add">Add account</button><button data-a="close">Close</button></div>`;
+    const inp = box.querySelector('#tq'); inp.oninput = () => { const v = inp.value; render(v); const i2 = box.querySelector('#tq'); i2.focus(); i2.setSelectionRange(v.length, v.length); };
+    box.querySelector('[data-a="close"]').onclick = close;
+    box.querySelector('[data-a="add"]').onclick = async () => { close(); await desk.addAccount(); };
+    box.querySelectorAll('.tc').forEach((b) => b.onclick = async () => {
+      const r = await desk.transcribe(b.dataset.g, b.dataset.c);
+      if (r?.error) { box.querySelector('#tmsg').textContent = r.error; return; }
+      close();
+    });
+  };
+  bg.style.display = 'grid';
+  render();
+  box.querySelector('#tq')?.focus();
+}
+window.openTranscribe = openTranscribe;
+
 // ------------------------------------------------------------ personality read (local LLM)
 let personaInfo = null;
 fetch('/api/persona/info').then((r) => r.json()).then((i) => { personaInfo = i; }).catch(() => {});
@@ -1225,7 +1318,8 @@ function persCandidates() {
   const per = stats().per.filter((p) => p.words >= 30);
   const c = currentCall();
   if (!c || !isLiveCall(c)) return per.slice(0, 3);
-  const present = new Set(liveState?.ext?.present || []);
+  const acc = (liveState?.accounts || []).find((a) => a.inCall && a.channel?.id && a.channel.id === c.ch);
+  const present = new Set(acc ? acc.present : liveState?.ext?.present || []);
   if (present.size) return per.filter((p) => present.has(p.k)).slice(0, 3);
   const recent = Date.now() - 10 * 60000;                 // older hook: people heard in the last 10 minutes
   const last = new Map(); for (const r of lines) last.set(keyOf.get(r), Math.max(last.get(keyOf.get(r)) || 0, r.end));
@@ -1309,7 +1403,7 @@ async function showCall(fresh = false) {
 }
 function reveal(c) { if (c) { closedGroups.delete(srvKey(c)); closedGroups.delete(chKey(c)); saveClosed(); } }
 async function openCall(id, scrollToT) {
-  selected = id === calls[0]?.id && isLiveCall(calls[0]) ? 'live' : id;
+  selected = id === calls[0]?.id && isLiveCall(calls[0]) && liveCallCount() <= 1 ? 'live' : id;
   reveal(calls.find((c) => c.id === id));
   filter = null; query = ''; $('#q').value = '';
   await showCall();
@@ -1327,6 +1421,10 @@ async function loadCalls() {
   calls = cs; Object.assign(names, nm);
   if (calls[0] && calls[0].id !== prevTop && isLiveCall(calls[0])) reveal(calls[0]);
   if (selected !== 'live' && !calls.some((c) => c.id === selected)) selected = 'live';
+  if (SHARE_CH) {                     // shared view of one account's call: follow that channel
+    const c = calls.find((x) => x.ch === SHARE_CH && x.day === today());
+    if (c) selected = c.id;
+  }
 }
 
 // history search (sidebar)
@@ -1384,13 +1482,15 @@ function connect() {
       if (!/^user-\d{4}$/.test(m.speaker) && m.user) names[m.user] = m.speaker;
       const d = today();
       if (dayCache.has(d)) { const arr = dayCache.get(d); arr.push(m); arr.sort((a, b) => a.t - b.t); }
-      const top = calls[0];
-      const extends_ = top && top.day === d && m.t - top.end < GAP && (!m.ch || !top.ch || m.ch === top.ch);
+      // the call this line belongs to: the open call in its channel (several can run at once)
+      const top = (m.ch && calls.find((c) => c.day === d && c.ch === m.ch && m.t - c.end < GAP))
+        || (calls[0] && calls[0].day === d && m.t - calls[0].end < GAP && (!m.ch || !calls[0].ch) ? calls[0] : null);
+      const extends_ = !!top;
       if (extends_) {
         top.end = Math.max(top.end, m.end); top.lines++; top.words += m.text.split(/\s+/).length;
         if (!top.people.includes(m.speaker)) top.people.push(m.speaker);
         if (m.ch && !top.ch) Object.assign(top, { ch: m.ch, chName: m.chName, guildName: m.guildName });
-        if (selected === 'live' || selected === top.id) {
+        if ((selected === 'live' && top === calls[0]) || selected === top.id) {
           lines = linesOf(top, dayCache.get(d) || []);
           const atEnd = lines[lines.length - 1] === m;
           rebuildKeys(); const s = stats(); renderKPIs(s); renderBars(s); renderWords(); renderWhere();
