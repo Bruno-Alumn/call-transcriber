@@ -1,109 +1,228 @@
+<div align="center">
+
+<img src="docs/media/logo.png" width="128" height="128" alt="Earshot app icon">
+
 # Earshot
 
-Live transcripts of your voice calls, one person at a time, all on your own computer.
+**Every voice, on its own line.**
 
-Earshot is a desktop app for macOS and Windows. Join a voice channel in its built-in call window and it transcribes each participant from their own audio stream. People who talk over each other stay on separate lines, and every line has the right name on it. The transcript, your call history and the stats sit in a dashboard next to the call. No audio leaves your machine.
+Live transcripts of your voice calls, one person at a time, on your own computer.
 
-![Dashboard during a call](docs/dashboard.png)
-<sub>Demo data. The names and conversation are made up.</sub>
+<a href="https://github.com/Bruno-Alumn/earshot/releases/latest"><img src="https://img.shields.io/badge/Download_for_Mac_%26_PC-0E8A7B?style=for-the-badge&logo=apple&logoColor=white" alt="Download Earshot for Mac and PC" height="36"></a>
 
-## What it does
+<a href="https://github.com/Bruno-Alumn/earshot/releases/latest"><img src="https://img.shields.io/github/v/release/Bruno-Alumn/earshot?style=flat-square&color=0E8A7B&label=release" alt="Latest release"></a>
+<img src="https://img.shields.io/badge/macOS-14%2B-1f2937?style=flat-square&logo=apple&logoColor=white" alt="macOS 14 or later">
+<img src="https://img.shields.io/badge/Windows-10_%7C_11-1f2937?style=flat-square&logo=windows&logoColor=white" alt="Windows 10 or 11">
+<img src="https://img.shields.io/badge/license-All_rights_reserved-6b7280?style=flat-square" alt="All rights reserved">
 
-- **One stream per person.** The voice platform sends each participant as a separate audio stream, and Earshot reads those streams directly. It never has to guess who's speaking.
-- **Call window built in.** The app opens the voice platform's web client in its own window, signed in with your normal account. You don't need a browser or an extension. Closing the window keeps you in the call.
-- **Dashboard.**
-  - **Call view:** live transcript with search and export (Markdown, text, SRT, CSV, JSON), who's in the call, talk time, activity over time, a 10-minute timeline, crosstalk and most-said words.
-  - **History:** past calls grouped by server and channel, with search across all of them. Right-click a call to archive, export or delete it.
-- **Compact mode.** The transcript and every panel on one screen, no scrolling. ⌘⇧K / Ctrl+Shift+K.
-- **Share it into the call.** Screen sharing from the call window opens a picker with a compact view made for sharing: live transcript and stats, none of your controls.
-- **Several accounts, several calls.** Add more accounts, each with its own call window and sign-in.
-  - **Main and listener accounts:** your main account uses your microphone. Listener accounts get a silent microphone and start with their sound off, and everything they hear is still transcribed.
-  - **Transcribe a channel** (⌘⇧T / Ctrl+Shift+T): pick a voice channel any of your accounts can see. The next free account opens it with Join Voice highlighted, and you click Join. Earshot never joins, leaves or mutes for you.
-  - **Calls side by side:** each call gets its own entry in the sidebar. If two of your accounts are in the same channel only one transcribes it, and your own accounts never count as other people.
-- **Personality reads.** Click **Read** next to anyone in Talk time, or right-click their name, for a light-hearted sketch of them: a one-liner, a rough Big Five guess and quotes as evidence. In compact mode the top three speakers still in the call get a one-line read that refreshes every 10 minutes. A small local model writes them (Liquid AI LFM3 1.7B, about 2 GB, downloaded on first use). Needs Apple Silicon or an NVIDIA GPU.
-- **Mute the call for yourself.** Turn the sound off on your end and Earshot keeps transcribing (⌘⇧M / Ctrl+Shift+M).
-- **Pick your speech model.** All of them run locally and you can switch mid-call:
+[Features](#features) · [Install](#install) · [Using Earshot](#using-earshot) · [Troubleshooting](#troubleshooting) · [Privacy](#privacy) · [Contribute](#contribute)
 
-  | Model | Words wrong* | Mac (Apple GPU) | Windows (NVIDIA GPU) | Notes |
-  |---|---|---|---|---|
-  | **Granite Speech 5.0 · 470M** (default) | 5.5% | 249× real time | 82× | best overall |
-  | Granite Speech 5.0 · 2B | 5.4% | 13× | 11× | most accurate, 9 GB |
-  | Parakeet TDT 0.6B v3 | 7.0% | 116× | 30× (CPU) | 25 European languages |
-  | Qwen3-ASR · 1.7B | 8.5% | 18× | 10× | 52 languages |
-  | Whisper large-v3-turbo | 13% | 15× | 30× | 99 languages |
+</div>
 
-  <sub>*Word error rate on 120 real meeting clips (AMI), measured on our own machines.</sub>
-- **Updates itself.** The dashboard tells you when a release is out, and **Update now** installs it.
+---
 
-| Compact mode | Shared view (what the call sees) |
-|---|---|
-| ![Compact mode](docs/compact.png) | ![Shared view](docs/shared-view.png) |
+Earshot opens your voice platform's web client in its own window and
+transcribes each person in the call from their own audio stream. When people
+talk over each other, every line still lands under the right name, in the
+order it was said. The transcript, your call history and the stats sit in a
+dashboard next to the call, and no audio ever leaves your machine.
+
+<p align="center">
+  <img src="docs/media/dashboard.png" width="860" alt="Earshot's dashboard during a call: the live transcript on the left with each line under its speaker's name and colour, and on the right who is in the call, talk time per person, activity over the last hour and resource use. The names and conversation are made-up demo data.">
+</p>
+
+## Features
+
+**Every person, separately**
+
+- Each participant is transcribed from their own audio stream, so there is no guessing who spoke.
+- When two people talk at once, their lines interleave by the moment each sentence was said.
+- Names come from the call itself; someone whose name can't be read shows as `user-1234`.
+
+**A dashboard for the call**
+
+- Live transcript with search, and export to Markdown, text, SRT subtitles, CSV or JSON.
+- Talk time, activity over time, a 10-minute timeline, crosstalk and most-said words.
+- Past calls grouped by server and channel, with search across all of them.
+- Compact mode puts the transcript and every panel on one screen, no scrolling.
+- Personality reads: a light-hearted sketch of anyone in the call, written by a small local model.
+
+**Several accounts, several calls**
+
+- Add more accounts, each with its own call window and sign-in.
+- Listener accounts get a silent microphone and start with their sound off, and are still transcribed.
+- **Transcribe a channel** sends the next free account to any channel you pick; you click Join.
+- Share a clean compact view of the call into the call itself when you screen share.
+
+**On your computer only**
+
+- Five local speech models, from 5.4% to 13% of words wrong on real meeting audio, all faster than real time.
+- Updates itself from new releases.
 
 ## Install
 
-### macOS (Apple Silicon)
-You need [uv](https://docs.astral.sh/uv/), Node.js and Xcode's command-line tools.
-```bash
-git clone https://github.com/Bruno-Alumn/earshot.git ~/earshot
-cd ~/earshot/server && uv sync
-~/earshot/app/mac/build.sh
-```
-`build.sh` puts the app in `~/Applications`. Open it, sign in once in the call window (⌘D), and join a voice channel. macOS asks for the microphone the first time.
+**On a Mac** (Apple Silicon, macOS 14 or later):
 
-### Windows 10/11
-```bash
-git clone https://github.com/Bruno-Alumn/earshot.git %USERPROFILE%\Earshot
-```
-Then double-click **install.cmd** in that folder. It installs:
-- Python and the transcription server
-- the GPU engine if you have an NVIDIA card, otherwise a fast CPU engine
-- the speech model and the app (plus Node.js if it's missing)
-- Start-menu and desktop shortcuts
+1. Install [uv](https://docs.astral.sh/uv/), [Node.js](https://nodejs.org) and Xcode's command-line tools (`xcode-select --install`).
+2. Run:
+   ```sh
+   git clone https://github.com/Bruno-Alumn/earshot.git ~/earshot
+   cd ~/earshot/server && uv sync
+   ~/earshot/app/mac/build.sh
+   ```
+3. Open **Call Transcriber** from `~/Applications`.
 
-[README-WINDOWS.md](README-WINDOWS.md) has the details. Install with `git clone` rather than the release zip, or in-app updates won't work.
+**On a PC** (Windows 10 or 11, 64-bit):
 
-## Using it
+1. Run `git clone https://github.com/Bruno-Alumn/earshot.git %USERPROFILE%\Earshot`.
+2. Double-click **install.cmd** in that folder. The first run takes a few minutes: it installs Python, the speech model, the app and Node.js if it's missing, and adds Start-menu and desktop shortcuts.
+3. Start **Call Transcriber** from the Start menu.
 
-1. Start the app. It runs the transcription server and opens the dashboard.
-2. Open the call window (the button in the top right, or ⌘D / Ctrl+D) and join a voice channel. Transcription starts on its own.
-3. Transcripts are saved in `transcripts/`, one Markdown and one JSON Lines file per day.
+With an NVIDIA graphics card the PC uses it for the most accurate model; without one it uses a CPU model at about 50× real time. [README-WINDOWS.md](README-WINDOWS.md) has the details.
 
-Closing the windows doesn't stop anything. Quit (⌘Q, or the Windows tray icon) stops it all. The dashboard also runs at http://127.0.0.1:8765/.
+> **A note about signing:** releases are not signed by Apple or Microsoft. The Mac app is built on your own Mac by `build.sh`, so macOS opens it without a warning. Install with `git clone` as above rather than from the release zip, or the app can't update itself.
 
-Notes:
-- Your own microphone isn't transcribed, only other people.
-- Don't deafen yourself in the call: that stops the audio from arriving. Use **Mute call audio** instead.
-- If someone's name can't be read, they show up as `user-1234` (the last digits of their ID).
-- Recording laws differ by place. Following the ones that apply to you and the people in the call is up to you.
+## Using Earshot
 
-## How it works
+1. **Sign in, once.** Show the call window with <kbd>⌘</kbd><kbd>D</kbd> and sign in to your voice platform there. Your Mac asks for the microphone the first time.
+2. **Join a voice channel.** Transcription starts on its own; the dashboard fills in as people talk.
+3. **Leave it running.** Closing a window keeps transcribing. Quit with <kbd>⌘</kbd><kbd>Q</kbd>, or from the tray icon on a PC.
 
-```
-call window (built-in Chromium)
-  └─ page-hook.js, injected before the web client's own code
-       reads each participant's WebRTC audio track, in 16 kHz chunks
-  └─ app main process ──WebSocket──▶ local server (Python)
-                                      ├─ voice activity detection per person
-                                      ├─ speech model (MLX / CUDA / ONNX)
-                                      └─ transcripts/*.md + *.jsonl
-dashboard ◀──HTTP + live updates── local server
-```
+| Action | What it does |
+|:--|:--|
+| <kbd>⌘</kbd><kbd>D</kbd> | Shows the call window |
+| <kbd>⌘</kbd><kbd>⇧</kbd><kbd>T</kbd> | Picks a channel for the next free account to join |
+| <kbd>⌘</kbd><kbd>⇧</kbd><kbd>K</kbd> | Switches compact mode on and off |
+| <kbd>⌘</kbd><kbd>⇧</kbd><kbd>M</kbd> | Turns the call's sound off for you, while it keeps being transcribed |
+| <kbd>⌘</kbd><kbd>⇧</kbd><kbd>F</kbd> | Searches every call |
+| **Read** next to a name in Talk time | Writes a personality read of that person |
+
+On a PC, use <kbd>Ctrl</kbd> in place of <kbd>⌘</kbd>. Accounts, models and updates are under the status buttons at the top of the dashboard.
+
+Transcripts are saved in `transcripts/`, one Markdown and one JSON Lines file per day. Recording laws differ by place, and in many of them everyone in the call has to agree; following them is up to you.
+
+## Troubleshooting
+
+<details>
+<summary><strong>Nobody is being transcribed</strong></summary>
+
+Check that you're not deafened in the call: deafening stops the audio from
+arriving at all. Use **Mute call audio** (<kbd>⌘</kbd><kbd>⇧</kbd><kbd>M</kbd>)
+to silence the call for yourself instead. If the status at the top says the
+call window isn't connected, restart the server from **Server › Restart Server**.
+</details>
+
+<details>
+<summary><strong>A listener account says "deafened, nothing is being heard"</strong></summary>
+
+That account is deafened in the call. Open its window from the Accounts list
+and undeafen it; it stays muted, because listener accounts have no microphone.
+</details>
+
+<details>
+<summary><strong>Lines show up several seconds late</strong></summary>
+
+The model is falling behind. Pick a faster one from the model button at the
+top of the dashboard: Granite Speech 470M is the default and the fastest.
+**Server › Show Server Log** shows what the server is doing.
+</details>
+
+<details>
+<summary><strong>"Node.js is needed" when installing on a PC</strong></summary>
+
+`install.cmd` installs Node.js with winget when it can. If winget isn't
+available, install Node.js from [nodejs.org](https://nodejs.org) and run
+`install.cmd` again.
+</details>
+
+If none of these help, [open an issue](https://github.com/Bruno-Alumn/earshot/issues/new) with the end of `server.log`.
+
+## Privacy
+
+Earshot has no accounts, analytics or telemetry, and call audio never leaves
+your computer. Its own network requests are:
+
+- **Speech and language models**, downloaded from Hugging Face the first time each is used (about 1.6 GB for the default speech model, 2 GB for personality reads).
+- **Update checks** against this repository with `git`, when the app starts and every 6 hours.
+- **The voice platform itself**, in the call window, as in a browser.
+
+Transcripts, learned names and call history stay in the app's folder and are
+never committed to git.
+
+### Permissions
+
+| Permission | Why it's needed |
+|:--|:--|
+| **Microphone** | Lets your main account talk in calls. Listener accounts never get it. |
+| **Screen & System Audio Recording** <sub>Mac</sub> | Only for sharing a screen or another app's window into a call. Sharing Earshot's own views works without it. |
+
+## Contribute
+
+- **Found something broken?** [Open an issue](https://github.com/Bruno-Alumn/earshot/issues/new).
+- **Want to help?** Fork the repository and open a pull request against `main`. Say what you changed and be honest about what you tested.
+
+Much of Earshot was built with AI coding agents, then compiled, tested and exercised on real hardware before merging.
+
+<details>
+<summary><strong>How it works</strong></summary>
+<br>
+
+The voice platform's web client receives each participant as a separate audio
+track. `app/desktop/page-hook.js` is added to the page before the client's own
+code runs; it reads each track at 16 kHz, without touching what you hear, and
+the app passes the audio to a local Python server. The server cuts each
+person's audio into utterances, transcribes them, splits them at sentence ends
+using the model's own word timing, and writes `transcripts/*.md` and `*.jsonl`.
 
 | Part | Where |
-|---|---|
-| Desktop app (Electron): dashboard, call window, share picker, tray | `app/desktop/` |
+|:--|:--|
+| Desktop app (Electron): dashboard, call windows, accounts, share picker, tray | `app/desktop/` |
 | Transcription server and dashboard | `server/` |
-| Hook that reads each person's audio | `app/desktop/page-hook.js` |
-| Mac app build | `app/mac/build.sh` |
-| Windows installer | `install.cmd`, `install.ps1`, `app/windows/` |
+| Mac app build, Windows installer | `app/mac/build.sh`, `install.cmd` |
 | Tests | `test/` |
 
-The server picks the speech engine for your machine: MLX on Apple Silicon, CUDA with an NVIDIA GPU, otherwise ONNX Runtime on the CPU. `--engine mlx|torch|onnx` overrides it.
+The server picks the engine for your machine: MLX on Apple Silicon, CUDA with
+an NVIDIA GPU, otherwise ONNX Runtime on the CPU.
+</details>
 
-## Development
+<details>
+<summary><strong>Speech models</strong></summary>
+<br>
 
-- `node test/app-test.js <dir>` runs the real app against a fake call with four speakers. It checks that the hook loads before the web client's code, the capture rate with the window hidden, names, channels, mute and screen sharing, and that quitting stops the server.
-- `cd server && uv run python ../test/server_e2e.py` runs the server test with three people talking over each other.
-- CI runs both on macOS and Windows for every push. Pushing a `vX.Y.Z` tag that matches `VERSION` publishes a release, which the app then offers as an update.
+Word error rate on 120 real meeting clips (AMI), measured on the maintainer's machines.
 
-Transcripts, learned names and archive choices are personal data and never get committed (see `.gitignore`).
+| Model | Words wrong | Speed (Mac / PC with NVIDIA) |
+|:--|:--|:--|
+| **Granite Speech 5.0 470M** (default) | 5.5% | 249× / 82× real time |
+| Granite Speech 5.0 2B | 5.4% | 13× / 11×, needs about 9 GB |
+| Parakeet TDT 0.6B v3 | 7.0% | 116× / 30× on the CPU, 25 European languages |
+| Qwen3-ASR 1.7B | 8.5% | 18× / 10×, 52 languages |
+| Whisper large-v3-turbo | 13% | 15× / 30×, 99 languages |
+
+Personality reads use Liquid AI LFM3 1.7B and need Apple Silicon or an NVIDIA GPU.
+</details>
+
+<details>
+<summary><strong>Build from source and tests</strong></summary>
+<br>
+
+```sh
+git clone https://github.com/Bruno-Alumn/earshot.git
+cd earshot/server && uv sync
+cd ../app/desktop && npm ci && npx electron .
+```
+
+- `node test/app-test.js <dir>`: the real app against a fake call with four speakers.
+- `node test/multi-test.js <dir>`: two accounts in separate calls, two in the same call, and Transcribe a channel.
+- `cd server && uv run python ../test/timing_test.py`: lines split at the right times.
+- `cd server && uv run python ../test/server_e2e.py`: the server alone, with people talking over each other.
+
+CI runs these on macOS and Windows for every push. Pushing a `vX.Y.Z` tag that
+matches `VERSION` publishes a release, which the app then offers as an update.
+</details>
+
+---
+
+**All rights reserved:** © 2026 Bruno-Alumn.
+
+<sub>More apps by Bruno-Alumn: [SolStream](https://github.com/Bruno-Alumn/SolStream) · [Tuckaway](https://github.com/Bruno-Alumn/Tuckaway) · [ThockBox](https://github.com/Bruno-Alumn/ThockBox)</sub>
