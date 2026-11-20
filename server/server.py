@@ -696,7 +696,7 @@ class PersonalityReader:
             import torch
             from transformers import AutoModelForCausalLM, AutoTokenizer
             self.proc = AutoTokenizer.from_pretrained(repo)
-            self.model = AutoModelForCausalLM.from_pretrained(repo, dtype=torch.bfloat16, device_map="cuda")
+            self.model = AutoModelForCausalLM.from_pretrained(repo, dtype=torch.bfloat16).to("cuda").eval()
         self.engine = eng
 
     def _generate(self, messages: list[dict]) -> str:
