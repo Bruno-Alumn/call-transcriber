@@ -1,11 +1,11 @@
 """English-only test for Granite 2B: with the Language setting on English, the
-speech LLM may only write plain-ASCII tokens (so it can't drift into another
-language's words or script), while end-of-text and other special tokens stay
-allowed.
+speech LLM may only write plain-ASCII tokens (no other scripts or accented
+letters; it does not translate, so French speech still comes out as French
+words without accents), while end-of-text and other special tokens stay allowed.
   cd server && uv run python ../test/english_test.py            (tokenizer only, quick)
   cd server && uv run python ../test/english_test.py --engine mlx|torch
      also runs the 2B model on IBM's multilingual sample (non-English speech):
-     without a language it writes the other language, with English only ASCII."""
+     without a language it writes accented French, with English only ASCII."""
 import argparse, glob, os, sys, numpy as np
 sys.argv, args = sys.argv[:1], argparse.ArgumentParser().parse_known_args()[1]
 sys.path.insert(0, ".")

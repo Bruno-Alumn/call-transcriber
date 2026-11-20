@@ -1146,8 +1146,9 @@ def load_engine(engine: str, repo: str, language: str | None):
         if "granite-speech" in repo.lower() and language == "en":      # Granite 2B, English only
             # model.generate takes no logits processors, so this runs its own
             # (non-streaming, greedy) decoding steps with a mask that forbids
-            # tokens which aren't plain ASCII: the model can't drift into
-            # another language's words or script. Same prompt as generate().
+            # tokens which aren't plain ASCII: no other scripts or accented
+            # letters (Latin-script words of another language can still slip
+            # through, just without accents). Same prompt as generate().
             from mlx_audio.lm.generate import generate_step
             gs = sys.modules[type(model).__module__]
             tok = model._tokenizer
@@ -1264,6 +1265,7 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
     import gc
     current, model_run = None, None
     refine_cur, refine_run = None, None
+    refine_lang = None                   # the language the rewrite model was loaded for (2B is English-only on "en")
     loader: dict = {}                    # background load of the rewrite model
     def free_memory(engine):
         gc.collect()
@@ -1277,7 +1279,8 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
     while True:
         lang = current_settings()["language"] if not language_forced else language
         want = (*hub.want, lang)                          # (id, engine, repo, language)
-        if want != current and refine_cur and want[:3] == refine_cur and refine_run:
+        if want != current and refine_cur and want[:3] == refine_cur and refine_run \
+                and refine_lang == (None if lang == "auto" else lang):
             # Both -> 2B only: the rewrite model is already loaded; make it the live one.
             model_run, refine_run, refine_cur, hub.refine_id = refine_run, None, None, None
             hub.refine_q.clear()
@@ -1289,7 +1292,8 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
         if want != current:
             mid, engine, repo, lang = want
             language = None if lang == "auto" else lang
-            if hub.want_refine is None and refine_run is not None:     # free the rewrite model first
+            if refine_run is not None and (hub.want_refine is None or refine_lang != language):
+                # free the rewrite model first (also when the language changed: it reloads for the new one)
                 refine_run, refine_cur, hub.refine_id = None, None, None
                 hub.refine_q.clear()
                 free_memory(engine)
@@ -1332,7 +1336,7 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
                 # Load (and on first use download) 2B in the background: live lines keep coming.
                 loader.clear(); loader["target"] = target
                 hub.refine_loading = target[0]
-                def load_refine(tg=target):
+                def load_refine(tg=target, lg=language):
                     try:
                         print(f"Loading {tg[2]} for the rewrite pass…", flush=True)
                         if tg[1] == "mlx":
@@ -1342,7 +1346,7 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
                             snapshot_download(tg[2])
                             loader.update(done=True, run=None, target=tg)
                         else:
-                            loader.update(done=True, run=load_engine(tg[1], tg[2], language), target=tg)
+                            loader.update(done=True, run=load_engine(tg[1], tg[2], lg), target=tg, lang=lg)
                     except Exception as e:
                         loader.update(done=True, error=f"{tg[0]}: {str(e)[:200]}", target=tg)
                 threading.Thread(target=load_refine, daemon=True).start()
@@ -1351,11 +1355,13 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
                     print("rewrite model failed:", loader["error"], flush=True)
                     hub.model_error = loader["error"]
                     hub.want_refine = None
+                elif loader.get("run") is not None and loader.get("lang") != language:
+                    loader.clear()                                         # language changed while loading: load again
                 else:
                     try:
                         run = loader["run"] or load_engine(target[1], target[2], language)
                         run(np.zeros(SR, dtype=np.float32))                # warm up here, on this thread
-                        refine_run, refine_cur, hub.refine_id = run, target, target[0]
+                        refine_run, refine_cur, hub.refine_id, refine_lang = run, target, target[0], language
                         print("Rewrite pass ready.", flush=True)
                     except Exception as e:
                         hub.model_error = f"{target[0]}: {str(e)[:200]}"; hub.want_refine = None
