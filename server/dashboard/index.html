@@ -708,7 +708,7 @@ function visibleLines() {
 }
 function renderFeed(onlyAppend = false, around = null) {
   const feed = $('#feed');
-  const nearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80;
+  const keepTop = feed.scrollTop;
   const vis = visibleLines();
   $('#feedmeta').textContent = (filter ? nameFor(filter) + ' · ' : '') + vis.length + ' lines' + (query ? ' matching' : '');
   if (!vis.length) { feed.innerHTML = `<div class="empty">${lines.length ? 'Nothing matches.' : 'Waiting for someone to speak…'}</div>`; return; }
@@ -732,8 +732,10 @@ function renderFeed(onlyAppend = false, around = null) {
   feed.insertAdjacentHTML('beforeend', html.join(''));
   lastRenderedCount = vis.length;
   paintQA();
-  if (ai < 0 && (!onlyAppend || nearBottom)) feed.scrollTop = feed.scrollHeight;
-  else if (ai < 0) $('#jump').style.display = 'block';
+  if (ai >= 0) feedFollow = false;                           // went back to an older line
+  else if (feedFollow) pinFeed();
+  else if (onlyAppend) $('#jump').style.display = 'block';
+  else feed.scrollTop = keepTop;                             // redrawn while reading back: stay put
 }
 // ------------------------------------------------------------ questions and answers
 // A line whose last sentence ends in "?" is a question. Its answer is the next
@@ -850,8 +852,23 @@ $('#feed').addEventListener('click', (e) => {
   el.classList.remove('go'); void el.offsetWidth; el.classList.add('go');
 });
 setInterval(() => { if ($('#feed .qa.wait')) paintQA(); }, 5000);
-$('#feed').addEventListener('scroll', (e) => { const f = e.target; if (f.scrollHeight - f.scrollTop - f.clientHeight < 80) $('#jump').style.display = 'none'; });
-$('#jump').onclick = () => { const f = $('#feed'); f.scrollTop = f.scrollHeight; $('#jump').style.display = 'none'; };
+// Following the newest line: on until you scroll up yourself (wheel, touch, keys,
+// dragging the scroll bar), back on when you scroll to the bottom or press
+// "New lines". While following, anything that changes the transcript's size
+// (new lines, answer chips, the layout adapting to the window) keeps it pinned.
+var feedFollow = true, feedUserAt = 0;   // var: renderFeed may run before this line during start-up
+function pinFeed() { const f = $('#feed'); if (!f) return; f.style.scrollBehavior = 'auto'; f.scrollTop = f.scrollHeight; f.style.scrollBehavior = ''; $('#jump').style.display = 'none'; }
+['wheel', 'touchmove', 'keydown', 'mousedown'].forEach((ev) => $('#feed').addEventListener(ev, () => { feedUserAt = Date.now(); }, { passive: true }));
+$('#feed').addEventListener('scroll', (e) => {
+  const f = e.target, gap = f.scrollHeight - f.scrollTop - f.clientHeight;
+  if (gap < 40) { feedFollow = true; $('#jump').style.display = 'none'; }
+  else if (Date.now() - feedUserAt < 1500) feedFollow = false;
+});
+$('#jump').onclick = () => { feedFollow = true; pinFeed(); };
+{ let pinQueued = false;
+  const keepPinned = () => { if (!feedFollow || pinQueued) return; pinQueued = true; requestAnimationFrame(() => { pinQueued = false; if (feedFollow) pinFeed(); }); };
+  new ResizeObserver(keepPinned).observe($('#feed'));
+  new MutationObserver(keepPinned).observe($('#feed'), { childList: true, subtree: true, characterData: true }); }
 
 // ------------------------------------------------------------ stats
 function stats() {
@@ -899,7 +916,7 @@ function renderBars(s) {
   document.querySelectorAll('.bar-row').forEach((el) => el.onclick = () => setFilter(el.dataset.k));
   document.querySelectorAll('.bar-row .read').forEach((b) => b.onclick = (e) => { e.stopPropagation(); personaRead(b.dataset.read); });
 }
-function setFilter(k) { filter = filter === k ? null : k; renderAll(); }
+function setFilter(k) { filter = filter === k ? null : k; feedFollow = true; renderAll(); }
 
 // ------------------------------------------------------------ activity (stacked bars)
 const tip = $('#tip');
@@ -1736,7 +1753,7 @@ function applyLayout() {
   if (SHARE) curLayout.cols.forEach((c) => { c.panels = c.panels.filter((p) => !PRIVATE_PANELS.has(p.id)); });
   let store = $('#panel-store');
   if (!store) { store = document.createElement('div'); store.id = 'panel-store'; document.body.appendChild(store); }
-  const feed = $('#feed'), atEnd = !feed || feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40;
+  const feed = $('#feed'), keepTop = feed?.scrollTop || 0;
   for (const p of panels.values()) store.appendChild(p.el);
   const host = $('#layout'); host.innerHTML = '';
   curLayout.cols.forEach((c, ci) => {
@@ -1751,7 +1768,7 @@ function applyLayout() {
   });
   host.style.gridTemplateColumns = curLayout.cols.map((c) => `minmax(0, ${c.w}fr)`).join(' ');
   $('#kpis').style.display = curLayout.kpis === false ? 'none' : '';
-  if (feed && atEnd) requestAnimationFrame(() => { feed.scrollTop = feed.scrollHeight; });
+  if (feed) { feedFollow ? pinFeed() : (feed.scrollTop = keepTop); }
   if (editing) decorateLayout();
   requestAnimationFrame(() => { const s = stats(); renderActivity(s); renderTimeline(s); if (panelShown('persona')) renderPers(); });
   emit('layout', curLayout);
@@ -2228,6 +2245,7 @@ async function showCall(fresh = false) {
 }
 function reveal(c) { if (c) { closedGroups.delete(srvKey(c)); closedGroups.delete(chKey(c)); saveClosed(); } }
 async function openCall(id, scrollToT) {
+  feedFollow = true;
   selected = id === calls[0]?.id && isLiveCall(calls[0]) && liveCallCount() <= 1 ? 'live' : id;
   reveal(calls.find((c) => c.id === id));
   filter = null; query = ''; $('#q').value = '';
@@ -2273,7 +2291,7 @@ $('#hq').oninput = () => {
 };
 
 function renderAll() { rebuildKeys(); const s = stats(); renderKPIs(s); renderBars(s); renderActivity(s); renderTimeline(s); renderWords(); renderFeed(); renderState(); if (panelShown('persona')) renderPers(); }
-let qTimer; $('#q').oninput = () => { clearTimeout(qTimer); qTimer = setTimeout(() => { query = $('#q').value.trim(); renderFeed(); }, 120); };
+let qTimer; $('#q').oninput = () => { clearTimeout(qTimer); qTimer = setTimeout(() => { query = $('#q').value.trim(); feedFollow = true; renderFeed(); }, 120); };
 $('#copy').onclick = async () => {
   const c = currentCall(); if (!c) return;
   const head = `${chTitle(c)}${c.guildName ? ' · ' + c.guildName : ''} · ${dayLabel(c.day)} ${fmtHM(c.start)} to ${fmtHM(c.end)}\n\n`;
@@ -2321,9 +2339,7 @@ function connect() {
       const c = currentCall();
       if (c && c.day === d) {
         // keep the reader where they are unless they were following the newest line
-        const feed = $('#feed'), atEnd = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40, keep = feed.scrollTop;
-        allLines = dayCache.get(d) || allLines; lines = linesOf(c, allLines); renderAll();
-        feed.scrollTop = atEnd ? feed.scrollHeight : keep;
+        allLines = dayCache.get(d) || allLines; lines = linesOf(c, allLines); renderAll();   // renderFeed keeps the reader's place
       }
       // the sidebar's line and word counts for calls that changed
       for (const cc of calls) if (cc.day === d && dayCache.has(d)) {
