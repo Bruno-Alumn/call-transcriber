@@ -1,10 +1,18 @@
 # Writes a fictional demo call (people, servers and words are made up) for
 # screenshots and tests:  python test/make_demo.py <transcripts-dir>
+# --people N (7-30): the weekly sync becomes a big call of N people instead of 6,
+# to check that the dashboard gives everyone a colour and shows every name.
 import json, random, time, datetime, sys
 random.seed(7)
 out = sys.argv[1]
 now = int(time.time() * 1000)
 people = [("100000000000000001","Maya"),("100000000000000002","Jonas"),("100000000000000003","Priya"),("100000000000000004","Theo"),("100000000000000005","Ines"),("100000000000000006","Sam")]
+crowd = int(sys.argv[sys.argv.index("--people") + 1]) if "--people" in sys.argv else 0
+if crowd:
+    more = ["Aurelio","Bea","Chidi","Dagny","Emeka","Farah","Gunnar","Hana","Ivo","Jun","Kalani","Lior",
+            "Mireille","Nadia","Oskar","Pita","Quinn","Rosalind Featherstonehaugh","Søren","Tomás","Ulla","Valentina","Wen","Xavi"]
+    crowd = max(len(people) + 1, min(crowd, len(people) + len(more)))
+    people = people + [(str(100000000000000007 + i), n) for i, n in enumerate(more[:crowd - 6])]
 lines = [
  "Okay, are we recording? Cool, let's start with the release plan.",
  "The build from last night passed everything except the save-file migration.",
@@ -61,9 +69,10 @@ lines = [
 ]
 t = now - 13 * 60000
 recs = []
-w = [5, 4, 3, 3, 2, 1]
+w = [5, 4, 3, 3, 2, 1] if not crowd else [max(1, 9 - i // 3) for i in range(crowd)]
 for i in range(150):
-    uid, name = random.choices(people, weights=w)[0]
+    if crowd and i % 2 == 0: uid, name = people[(i // 2) % crowd]   # big call: everyone speaks, also in the last 10 minutes
+    else: uid, name = random.choices(people, weights=w)[0]
     text = lines[i % len(lines)]
     d = int(len(text.split()) * 330 + random.randint(200, 900))
     if random.random() < 0.25: t -= random.randint(300, 1200)
@@ -80,11 +89,11 @@ for i in range(40):
     t2 += 6000
 t3 = now - 3 * 3600000
 for i in range(30):
-    uid, name = random.choice(people[3:])
+    uid, name = random.choice(people[3:6])
     earlier.append({"t": t3, "end": t3 + 3000, "user": uid, "speaker": name, "text": random.choice(lines), "ch": "200000000000000003", "chName": "General", "guild": "300000000000000002", "guildName": "Book Club"})
     t3 += 7000
 day = datetime.date.today().isoformat()
 with open(f"{out}/{day}.jsonl", "w") as f:
     for r in sorted(earlier + recs, key=lambda r: r["t"]):
         f.write(json.dumps(r) + "\n")
-print(len(recs), "lines")
+print(len(recs), "lines", *([f"· {len({r['user'] for r in recs})} people in the big call"] if crowd else []))
