@@ -890,11 +890,11 @@ ENGINE_DEFAULTS = {
 # word error rate % and speed (x real time) on the machines we tested.
 MODELS = [
     {"id": "granite-470m", "name": "Granite Speech 5.0 · 470M", "default": True,
-     "about": "Fast and light: transcribes live. English + 6 languages.", "langs": "English + 6 more",
+     "about": "Fast and light: transcribes live. English only.", "langs": "English",
      "repos": {"mlx": "ibm-granite/granite-speech-5.0-470m-turboctc", "torch": "ibm-granite/granite-speech-5.0-470m-turboctc"},
      "bench": {"mlx": {"wer": 5.5, "speed": 249, "mem": 1.6}, "torch": {"wer": 5.5, "speed": 82, "mem": 0.9}}},
     {"id": "granite-2b", "name": "Granite Speech 5.0 · 2B",
-     "about": "The most accurate; about 5x the memory and much slower. English + 6 languages.", "langs": "English + 6 more",
+     "about": "The most accurate; about 5x the memory and much slower. English only.", "langs": "English",
      "repos": {"mlx": "ibm-granite/granite-speech-5.0-2b", "torch": "ibm-granite/granite-speech-5.0-2b"},
      "bench": {"mlx": {"wer": 5.4, "speed": 13, "mem": 9.1}, "torch": {"wer": 5.4, "speed": 11}}},
     # Not offered: used automatically on PCs without an NVIDIA GPU, where Granite can't keep up.
@@ -999,7 +999,7 @@ def save_settings(**kw):
 SETTING_DEFAULTS = {"splitLines": True, "personality": True, "autoUpdate": True, "sensitivity": "normal", "language": "en",
                     "background": "dim"}
 SETTING_CHOICES = {"sensitivity": ["high", "normal", "low"], "background": ["show", "dim", "hide"],   # how the dashboard shows "bg" lines
-                   "language": ["en", "auto", "es", "fr", "de", "it", "pt", "nl", "pl", "ru", "uk", "ja", "zh", "ko"]}
+                   "language": ["en"]}      # Earshot transcribes English only: every model is held to it
 SENSITIVITY = {"high": 0.5, "normal": 1.0, "low": 2.0}     # x the speech threshold: high hears quieter voices
 VAD_SENSITIVITY = {"high": 0.35, "normal": 0.5, "low": 0.65}  # speech probability the VAD must reach (Silero's default is 0.5)
 
@@ -1042,7 +1042,9 @@ def plugin_file(rel: str):
 
 def current_settings() -> dict:
     st = load_settings()
-    return {k: st.get(k, v) for k, v in SETTING_DEFAULTS.items()}
+    out = {k: st.get(k, v) for k, v in SETTING_DEFAULTS.items()}
+    out["language"] = "en"           # English only, whatever an older settings.json says
+    return out
 
 
 def set_setting(key: str, raw: str) -> dict:
@@ -1376,8 +1378,51 @@ def to_clock(marks: list[tuple[int, float]], sec: float) -> float:
     return best[1] + (pos - best[0]) / SR * 1000
 
 
+# The token masks keep other scripts and accents out, but Spanish, French or
+# German speech can still come out as unaccented words in that language. Those
+# lines are dropped: a line counts as another language when its common short
+# words are clearly that language's ("que", "la", "und", "die", "est"...) and
+# not English's. Few such words, or as many English ones, and the line stays.
+EN_COMMON = set("""the a an and or but to of in on at for with is are was were be been it its this that these those
+i you he she we they me him her us them my your our their do does did not no yes so if then than there here what
+who how why when where can could would should will just like about have has had get got go going know think yeah
+okay ok right well oh uh um hey up out all one some any my as by from""".split())
+FOREIGN_COMMON = set("""que la las los el lo una unos del al por para con como pero porque es esta este estoy estas
+muy hay yo tu nosotros vamos todos bueno gracias hola si ahora tambien donde cuando
+le les des du au aux une est sont avec pour pas mais je tu il elle nous vous ils sur dans tres bien merci bonjour oui
+der die das und ist nicht ein eine einen mit auf fur ich du wir sie es sind auch aber noch nur wie was wenn dann
+ja nein danke guten morgen bitte zu von dem den im
+di il gli della che sono per non una questo ciao grazie
+de het een en niet ik je wij zijn van voor met op dat ook
+nao sim obrigado voce com uma para mas muito""".split()) - EN_COMMON
+
+
+def not_english(text: str) -> bool:
+    words = re.findall(r"[a-z']+", text.lower())
+    if len(words) < 3:
+        return False
+    f = sum(w in FOREIGN_COMMON for w in words)
+    e = sum(w in EN_COMMON for w in words)
+    distinct = len({w for w in words if w in FOREIGN_COMMON})
+    return distinct >= 2 and f > 2 * e and f >= 0.25 * len(words)
+
+
 def load_engine(engine: str, repo: str, language: str | None):
-    """Returns run(audio float32 16 kHz) -> text."""
+    """Returns run(audio float32 16 kHz) -> text (or {"text", "pieces"}), English only."""
+    run = _load_engine(engine, repo, language)
+    def english_run(audio):
+        out = run(audio)
+        text = out["text"] if isinstance(out, dict) else out
+        if text and not_english(text):
+            print(f"Dropped a line in another language: {text[:60]!r}", flush=True)
+            return {"text": "", "pieces": []} if isinstance(out, dict) else ""
+        return out
+    return english_run
+
+
+def _load_engine(engine: str, repo: str, language: str | None):
+    if "granite" in repo.lower() or "parakeet" in repo.lower():
+        language = "en"          # Earshot's models only ever write English
     if engine == "mlx" and "whisper" in repo.lower():      # Whisper: its own MLX package
         import mlx_whisper
         kw = {"language": language} if language else {}
@@ -1529,6 +1574,18 @@ def load_engine(engine: str, repo: str, language: str | None):
     if engine == "onnx":
         import onnx_asr
         model = onnx_asr.load_model(repo, quantization="int8")
+        asr = getattr(model, "asr", None)
+        if language == "en" and asr is not None and hasattr(asr, "_decode") and getattr(asr, "_vocab", None):
+            # Parakeet (TDT): add the English mask to the token logits at every
+            # decoding step, so it can only pick plain-ASCII pieces (or blank)
+            vocab, blank = asr._vocab, asr._blank_idx
+            ok = np.array([i == blank or all(ord(c) < 128 for c in vocab.get(i, "")) for i in range(asr._vocab_size)])
+            mask = np.where(ok, 0.0, -1e9).astype(np.float32)
+            dec = asr._decode
+            def decode_en(prev_tokens, prev_state, encoder_out):
+                logits, step, state = dec(prev_tokens, prev_state, encoder_out)
+                return logits + mask[: logits.shape[-1]], step, state
+            asr._decode = decode_en
         return lambda audio: model.recognize(audio, sample_rate=SR)
     raise SystemExit(f"Unknown engine {engine!r} (use mlx, torch, onnx or auto)")
 
@@ -1561,7 +1618,7 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
         except Exception:
             pass
     while True:
-        lang = current_settings()["language"] if not language_forced else language
+        lang = "en"      # English only (the --language flag still reaches Whisper/Qwen test models below)
         want = (*hub.want, lang)                          # (id, engine, repo, language)
         if want != current and refine_cur and want[:3] == refine_cur and refine_run \
                 and (refine_lang == "en") == (lang == "en"):
