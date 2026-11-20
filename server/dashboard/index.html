@@ -326,14 +326,44 @@ body.compact .words { grid-template-columns: 1fr; gap: 2px; }
 body.compact .word { font-size: 12px; }
 body.compact .legend { padding: 0 12px 4px; font-size: 11px; gap: 2px 10px; max-height: 38px; overflow-y: auto; overscroll-behavior: contain; }   /* wraps; scrolls past two rows */
 body.compact #feedmeta { display: none; }
+/* ---------- smaller windows */
+@media (max-width: 999px) {
+  .shell, .shell.collapsed { grid-template-columns: 0 minmax(0, 1fr); }
+  .side { position: fixed; left: 0; top: 0; bottom: 0; width: 280px; z-index: 40; visibility: hidden; box-shadow: 0 10px 40px rgba(0,0,0,.25); }
+  .shell.side-open .side { visibility: visible; }
+  .shell > .app { grid-column: 2; grid-row: 1; }
+  body.compact #toggle-side { display: inline-flex; }
+}
+@media (max-width: 1150px) {
+  header { flex-wrap: wrap; row-gap: 8px; }
+  header .pills { order: 9; flex: 1 0 100%; overflow-x: auto; scrollbar-width: none; }
+  .kpi .sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #feedmeta { display: none; }
+  .card .head { flex-wrap: wrap; row-gap: 6px; }
+  .card .head input[type=search] { flex: 1 1 90px; min-width: 70px; width: auto !important; }
+  .card .head .meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+}
+/* normal view: one column the page scrolls through */
 @media (max-width: 900px) {
-  html, body { overflow: auto; }
-  .app { overflow: visible; }
-  .main { grid-template-columns: 1fr !important; }
-  .lcol { overflow: visible; }
-  .kpis { grid-template-columns: repeat(2, 1fr); }
-  .app { height: auto; }
-  .feed { max-height: 60vh; }
+  body:not(.compact) { overflow: auto; }
+  body:not(.compact) .shell { height: auto; min-height: 100vh; overflow: visible; }
+  body:not(.compact) .app { overflow: visible; height: auto; }
+  body:not(.compact) .main { display: flex; flex-direction: column; flex: none; height: auto; }
+  body:not(.compact) .lcol { flex: none; }
+  body:not(.compact) .lcol { overflow: visible; }
+  body:not(.compact) .lcol > .card.grow { flex: none; }
+  body:not(.compact) .card[data-panel="transcript"] { height: 70vh; min-height: 320px; }
+  body:not(.compact) .kpis { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+}
+/* compact view: every number on one row, without the small print */
+@media (max-width: 1100px) {
+  body.compact .kpi .sub { display: none; }
+  body.compact .kpi { padding: 6px 10px; }
+}
+@media (max-width: 640px) {
+  body.compact .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  body.compact .kpi:nth-child(n+4) { display: none; }
+  .app { padding: 10px; }
 }
 /* ---------- shared view (?view=share): what other people in the call see */
 .share #toggle-side, .share #toggle-compact, .share .pills, .share #banner,
@@ -1668,7 +1698,22 @@ const AUTO_WIDE = {
     { w: 1.2, panels: [P('activity', 1), P('timeline')] },
     { w: 0.8, panels: [P('resources'), P('persona')] }] },
 };
-const autoCols = () => { const w = $('#layout')?.clientWidth || innerWidth; return w >= 2100 ? 4 : w >= 1380 ? 3 : 2; };
+// Compact view fits everything on one screen, so it drops to fewer columns (and
+// fewer panels) as the window gets smaller, and spreads out on a big screen.
+const AUTO_COMPACT = {
+  1: { kpis: true, cols: [{ w: 1, panels: [P('live'), P('transcript', 1)] }] },
+  2: { kpis: true, cols: [{ w: 1.15, panels: [P('transcript', 1)] },
+    { w: 1, panels: [P('live'), P('talk', 1), P('activity', 1)] }] },
+  4: { kpis: true, cols: [{ w: 1.2, panels: [P('transcript', 1)] },
+    { w: 0.8, panels: [P('live'), P('talk', 1)] },
+    { w: 1, panels: [P('activity', 1), P('timeline', 1)] },
+    { w: 0.8, panels: [P('persona'), P('words', 1)] }] },
+};
+const autoCols = (mode = layoutMode()) => {
+  const w = $('#layout')?.clientWidth || innerWidth;
+  if (mode === 'compact') return w >= 2100 ? 4 : w >= 960 ? 3 : w >= 560 ? 2 : 1;
+  return w >= 2100 ? 4 : w >= 1380 ? 3 : 2;
+};
 let autoShape = 0;
 function storedLayout(mode) { try { const L = JSON.parse(localStorage.getItem('ct-layout-' + mode)); if (L?.cols?.length) return L; } catch {} return null; }
 function autoExtras() { try { return JSON.parse(localStorage.getItem('ct-layout-extra') || '[]'); } catch { return []; } }
@@ -1676,9 +1721,9 @@ function loadLayout() {
   const mode = layoutMode();
   autoShape = 0;
   if (mode !== 'share') { const L = storedLayout(mode); if (L) return L; }
-  if (mode !== 'normal') return clone(LAYOUT_DEFAULTS[mode]);
-  autoShape = autoCols();
-  const L = clone(AUTO_WIDE[autoShape] || LAYOUT_DEFAULTS.normal);
+  if (mode === 'share') return clone(LAYOUT_DEFAULTS[mode]);
+  autoShape = autoCols(mode);
+  const L = clone((mode === 'compact' ? AUTO_COMPACT : AUTO_WIDE)[autoShape] || LAYOUT_DEFAULTS[mode]);
   for (const e of autoExtras()) if (!L.cols.some((c) => c.panels.some((p) => p.id === e.id))) L.cols[L.cols.length - 1].panels.push(P(e.id, e.grow));
   return L;
 }
@@ -1819,7 +1864,7 @@ const earshot = window.earshot = Object.freeze({
       const seen = 'ct-plugpanel-' + id;
       let first = true; try { first = !localStorage.getItem(seen); localStorage.setItem(seen, '1'); } catch {}
       if (show && first && !SHARE) {
-        if (layoutMode() === 'normal' && !storedLayout('normal')) { try { localStorage.setItem('ct-layout-extra', JSON.stringify([...autoExtras(), { id, grow }])); } catch {} }
+        if (layoutMode() !== 'share' && !storedLayout(layoutMode())) { try { localStorage.setItem('ct-layout-extra', JSON.stringify([...autoExtras(), { id, grow }])); } catch {} }
         else { const L = loadLayout(); L.cols[L.cols.length - 1].panels.push(P(id, grow)); curLayout = L; saveLayout(); }
       }
       applyLayout();
@@ -2237,8 +2282,11 @@ $('#copy').onclick = async () => {
   try { await navigator.clipboard.writeText(head + body); } catch { const ta = document.createElement('textarea'); ta.value = head + body; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
   $('#copy').textContent = 'Copied'; setTimeout(() => ($('#copy').textContent = 'Copy'), 1500);
 };
-const toggleSide = () => { $('#shell').classList.toggle('collapsed'); setTimeout(() => { const s = stats(); renderActivity(s); renderTimeline(s); }, 50); };
-$('#toggle-side').onclick = toggleSide;
+const narrowSide = matchMedia('(max-width: 999px)');
+const toggleSide = () => { narrowSide.matches ? $('#shell').classList.toggle('side-open') : $('#shell').classList.toggle('collapsed'); setTimeout(() => { const s = stats(); renderActivity(s); renderTimeline(s); }, 50); };
+$('#toggle-side').onclick = (e) => { e.stopPropagation(); toggleSide(); };
+// on a narrow window the calls list floats over the dashboard; picking a call or clicking outside closes it
+document.addEventListener('click', (e) => { const sh = $('#shell'); if (!sh.classList.contains('side-open')) return; if (!e.target.closest('.side') || e.target.closest('.call')) sh.classList.remove('side-open'); });
 // Compact mode (remembered per browser/app)
 try { compact = localStorage.getItem('ct-compact') === '1'; } catch {}
 function setCompact(on, persist = true) {
