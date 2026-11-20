@@ -195,6 +195,10 @@ select:focus, input:focus { border-color: var(--accent); }
 .line.cont { padding-top: 0; }
 .line.cont .time { visibility: hidden; }
 .line.new { animation: flash 1.6s ease-out; }
+/* lines that were not the person's own voice (a video, someone in their room) */
+.line.bg .text { color: var(--text-muted); }
+.line.bg .who { opacity: .6; }
+.bgtag { font-size: 10.5px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; margin-left: 6px; white-space: nowrap; vertical-align: 1px; }
 @keyframes flash { from { background: color-mix(in srgb, var(--accent) 16%, transparent); } to { background: transparent; } }
 mark { background: color-mix(in srgb, var(--warn) 35%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
 .empty { color: var(--text-muted); text-align: center; padding: 40px 10px; }
@@ -601,8 +605,12 @@ function highlight(text) {
   const q = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return e.replace(new RegExp(q, 'gi'), (m) => `<mark>${m}</mark>`);
 }
+// "bg" lines did not sound like the person (a video or someone else near their
+// mic). Settings > Background voices: show them plainly, dimmed, or not at all.
+const bgMode = () => serverSettings?.background || 'dim';
 function visibleLines() {
-  return lines.filter((r) => (!filter || keyOf.get(r) === filter) && (!query || r.text.toLowerCase().includes(query.toLowerCase()) || nameFor(keyOf.get(r)).toLowerCase().includes(query.toLowerCase())));
+  const hideBg = bgMode() === 'hide';
+  return lines.filter((r) => !(hideBg && r.bg) && (!filter || keyOf.get(r) === filter) && (!query || r.text.toLowerCase().includes(query.toLowerCase()) || nameFor(keyOf.get(r)).toLowerCase().includes(query.toLowerCase())));
 }
 function renderFeed(onlyAppend = false) {
   const feed = $('#feed');
@@ -618,7 +626,8 @@ function renderFeed(onlyAppend = false) {
   for (const r of slice) {
     const k = keyOf.get(r);
     const cont = prev && keyOf.get(prev) === k && r.t - prev.end < 15000;
-    html.push(`<div class="line${cont ? ' cont' : ''}${onlyAppend ? ' new' : ''}" data-t="${r.t}"><div class="time">${fmtTime(r.t)}</div><div>${cont ? '' : `<span class="who" data-k="${esc(k)}" title="Right-click for a personality read"><span class="swatch" style="background:${colorFor(k)}"></span>${esc(nameFor(k))}</span>`}<span class="text">${highlight(r.text)}</span>${lineExtras(r)}</div></div>`);
+    const dimBg = r.bg && bgMode() === 'dim';
+    html.push(`<div class="line${cont ? ' cont' : ''}${onlyAppend ? ' new' : ''}${dimBg ? ' bg' : ''}" data-t="${r.t}"><div class="time">${fmtTime(r.t)}</div><div>${cont ? '' : `<span class="who" data-k="${esc(k)}" title="Right-click for a personality read"><span class="swatch" style="background:${colorFor(k)}"></span>${esc(nameFor(k))}</span>`}<span class="text">${highlight(r.text)}</span>${dimBg ? '<span class="bgtag" title="Did not sound like this person: a video or someone else near their mic">background</span>' : ''}${lineExtras(r)}</div></div>`);
     prev = r;
   }
   feed.insertAdjacentHTML('beforeend', html.join(''));
@@ -1075,7 +1084,7 @@ function render(fmt, sections, title) {
 }
 async function exportCalls(group, fmt) {
   const sections = [];
-  for (const c of group.calls) sections.push({ call: c, lines: linesOf(c, await dayLines(c.day)) });
+  for (const c of group.calls) sections.push({ call: c, lines: linesOf(c, await dayLines(c.day)).filter((r) => !r.bg) });   // not background voices
   sections.sort((a, b) => a.call.start - b.call.start);
   const [ext, , , mime] = FORMATS.find((f) => f[0] === fmt);
   const first = sections[0]?.call;
@@ -1474,6 +1483,7 @@ async function openSettings() {
       <div class="srow"><span><b>Speech model</b><small>${esc(model)}</small></span><button data-a="model">Change…</button></div>
       ${tog('splitLines', 'Split lines at sentences', ss.splitLines !== false, 'When people talk over each other, lines interleave in the order they were said.')}
       ${sel('sensitivity', 'Speech detection', ss.sensitivity || 'normal', [['high', 'More sensitive'], ['normal', 'Normal'], ['low', 'Less sensitive']], 'More sensitive picks up quiet voices; less ignores background noise.')}
+      ${sel('background', 'Background voices', ss.background || 'dim', [['dim', 'Dim them'], ['show', 'Show normally'], ['hide', 'Hide them']], 'Speech that doesn\'t sound like the person, like a video playing near their mic. Never in exports or personality reads.')}
       ${sel('language', 'Language', ss.language || 'en', (ss.choices?.language || Object.keys(langs)).map((v) => [v, langs[v] || v]), 'English keeps Granite 470M from drifting into other languages. Changing it reloads the model.')}
       <div class="sh">Personality reads</div>
       ${tog('personality', 'Personality reads', ss.personality !== false, 'The Read buttons and the compact-mode panel. Written by a local model.')}
@@ -1498,6 +1508,7 @@ async function openSettings() {
     const r = await fetch(`/api/settings?key=${encodeURIComponent(k)}&value=${encodeURIComponent(v === true ? '1' : v === false ? '0' : v)}`, { method: 'POST', headers: { 'X-CT': '1' } }).then((x) => x.json()).catch(() => ({ error: 'The server isn\'t running.' }));
     if (r.error) { msg(r.error); return; }
     await loadServerSettings();
+    if (k === 'background') renderFeed();
     msg(k === 'language' ? 'Saved. The model reloads with the new language.' : 'Saved.');
   });
   box.querySelector('[data-a="close"]').onclick = close;
@@ -1782,7 +1793,7 @@ let qTimer; $('#q').oninput = () => { clearTimeout(qTimer); qTimer = setTimeout(
 $('#copy').onclick = async () => {
   const c = currentCall(); if (!c) return;
   const head = `${chTitle(c)}${c.guildName ? ' · ' + c.guildName : ''} — ${dayLabel(c.day)} ${fmtHM(c.start)}–${fmtHM(c.end)}\n\n`;
-  const body = lines.map((r) => `[${fmtTime(r.t)}] ${nameFor(keyOf.get(r))}: ${r.text}`).join('\n');
+  const body = lines.filter((r) => !r.bg).map((r) => `[${fmtTime(r.t)}] ${nameFor(keyOf.get(r))}: ${r.text}`).join('\n');
   try { await navigator.clipboard.writeText(head + body); } catch { const ta = document.createElement('textarea'); ta.value = head + body; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
   $('#copy').textContent = 'Copied'; setTimeout(() => ($('#copy').textContent = 'Copy'), 1500);
 };

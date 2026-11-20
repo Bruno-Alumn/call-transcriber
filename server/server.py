@@ -133,10 +133,12 @@ class Writer:
             md.write_text(f"# Voice call transcript, {when:%A %B} {when.day}, {when.year}\n\n", encoding="utf-8")
         return md, TRANSCRIPTS / f"{when:%Y-%m-%d}.jsonl"
 
-    def write(self, t_ms: float, dur_s: float, uid: str, speaker: str, text: str, ch: dict | None = None):
+    def write(self, t_ms: float, dur_s: float, uid: str, speaker: str, text: str, ch: dict | None = None, bg: bool = False):
         when = dt.datetime.fromtimestamp(t_ms / 1000)
         md, jl = self._paths(when)
         rec = {"id": os.urandom(5).hex(), "t": int(t_ms), "end": int(t_ms + dur_s * 1000), "user": uid, "speaker": speaker, "text": text}
+        if bg:
+            rec["bg"] = True             # not the person's own voice (a video, someone in their room)
         with self.lock:
             self.pending.append((t_ms, when, speaker, text, (ch or {}).get("name"), time.time(), rec["id"]))
         self.flush_md()
@@ -164,7 +166,7 @@ class Writer:
         for i, (t_ms, end_ms, text) in enumerate(parts):
             rec = {"id": os.urandom(5).hex(), "t": int(t_ms), "end": int(max(end_ms, t_ms + 300)), "user": base["user"],
                    "speaker": base["speaker"], "text": text, "refined": True}
-            for k in ("ch", "chName", "guild", "guildName"):
+            for k in ("ch", "chName", "guild", "guildName", "bg"):   # the 2B rewrite keeps the background flag
                 if k in base:
                     rec[k] = base[k]
             new.append(rec)
@@ -764,8 +766,9 @@ def save_settings(**kw):
 
 
 # Settings the dashboard can change (stored with the model choice in settings.json).
-SETTING_DEFAULTS = {"splitLines": True, "personality": True, "autoUpdate": True, "sensitivity": "normal", "language": "en"}
-SETTING_CHOICES = {"sensitivity": ["high", "normal", "low"],
+SETTING_DEFAULTS = {"splitLines": True, "personality": True, "autoUpdate": True, "sensitivity": "normal", "language": "en",
+                    "background": "dim"}
+SETTING_CHOICES = {"sensitivity": ["high", "normal", "low"], "background": ["show", "dim", "hide"],   # how the dashboard shows "bg" lines
                    "language": ["en", "auto", "es", "fr", "de", "it", "pt", "nl", "pl", "ru", "uk", "ja", "zh", "ko"]}
 SENSITIVITY = {"high": 0.5, "normal": 1.0, "low": 2.0}     # x the speech threshold: high hears quieter voices
 
@@ -956,7 +959,7 @@ class PersonalityReader:
         if not eng:
             return {"error": why}
         recs, _ = day_data(day)
-        mine = [r for r in recs if t0 <= r["t"] <= t1 and (not ch or not r.get("ch") or r.get("ch") == ch)
+        mine = [r for r in recs if t0 <= r["t"] <= t1 and (not ch or not r.get("ch") or r.get("ch") == ch) and not r.get("bg")
                 and ((user and r.get("user") == user) or (not user and r.get("speaker") == name))]
         said = [r["text"].strip() for r in mine if r.get("text", "").strip()]
         words = sum(len(x.split()) for x in said)
@@ -1215,6 +1218,16 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
     """Transcribes queued utterances. Switches models live when hub.want changes
     (utterances wait in the queue while the new model loads)."""
     import gc
+    from concurrent.futures import ThreadPoolExecutor
+    # Own-voice detection runs on the CPU next to transcription (on the GPU
+    # with MLX/torch), so it adds no wait; one worker keeps it in order.
+    try:
+        from voiceprint import Voiceprints
+        voices = Voiceprints()
+    except Exception as e:               # missing file or onnxruntime: transcribe without it
+        print("Own-voice detection off:", e, flush=True)
+        voices = None
+    voice_pool = ThreadPoolExecutor(1)
     current, model_run = None, None
     refine_cur, refine_run = None, None
     loader: dict = {}                    # background load of the rewrite model
@@ -1338,6 +1351,7 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
             hub.busy_t0 = t0
         except queue.Empty:
             continue
+        voice = voice_pool.submit(voices.check, uid or who, audio) if voices else None
         try:
             started = time.time()
             res = model_run(audio) or ""
@@ -1356,12 +1370,16 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
             parts = [(text, 0.0, len(audio) / SR)]
         else:
             parts = split_timed(res["pieces"]) if isinstance(res, dict) and res.get("pieces") else split_by_text(text, len(audio) / SR)
+        try:
+            bg = bool(voice and voice.result(timeout=10))
+        except Exception:
+            bg = False
         written = []
         for part, a, b in parts:
             part = tidy(part)
             if part and part.lower() not in HALLUCINATIONS:
                 start = to_clock(marks, a)
-                written.append(writer.write(start, max(0.3, (to_clock(marks, b) - start) / 1000), uid, who, part, ch))
+                written.append(writer.write(start, max(0.3, (to_clock(marks, b) - start) / 1000), uid, who, part, ch, bg))
         if refine_run and written:
             hub.refine_q.append({"t0": t0, "audio": audio, "marks": marks, "lines": written, "queued": time.time()})
         hub.busy_t0 = None
