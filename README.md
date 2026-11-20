@@ -30,6 +30,12 @@ dashboard next to the call. Audio never leaves your computer.
 - **Share it in the call.** Screen sharing from the built-in Discord opens a
   picker. It includes a clean compact view made for sharing that shows the live
   transcript and stats but none of your controls.
+- **Personality reads.** Click **Read** next to anyone in Talk time (or
+  right-click their name) for a quick, light-hearted personality sketch: a
+  one-liner, a rough Big Five guess and quotes as evidence. Compact mode shows a
+  one-line read of the top three speakers and keeps it updated as they talk. A
+  small local model writes them on your computer: Liquid AI LFM3 1.7B, about 2 GB,
+  downloaded on first use. Needs Apple Silicon or an NVIDIA GPU.
 - **Mute call audio for yourself.** Silence the call on your end while it keeps
   being transcribed (⌘⇧M / Ctrl+Shift+M).
 - **Choice of speech models.** All run locally and switch live:

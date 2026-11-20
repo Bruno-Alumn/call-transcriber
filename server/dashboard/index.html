@@ -279,7 +279,7 @@ body.compact .res .m .v { font-size: 15px; }
 body.compact .res .m .s { display: none; }
 body.compact .res svg { height: 18px; }
 body.compact .bars { gap: 5px; }
-body.compact .bar-row { grid-template-columns: minmax(0, 110px) 1fr auto; font-size: 12px; }
+body.compact .bar-row { grid-template-columns: minmax(0, 96px) minmax(48px, 1fr) auto; font-size: 12px; }
 body.compact .bar-row .num { white-space: nowrap; }
 body.compact .words { grid-template-columns: 1fr; gap: 2px; }
 body.compact .word { font-size: 12px; }
@@ -301,9 +301,8 @@ body.compact .c-tl .body { overflow: hidden; }
 .share .where { font-size: 14px; }
 .share header::after { content: "Live transcript · Call Transcriber"; margin-left: auto; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
 /* ---------- personality read */
-.bar-row { grid-template-columns: 130px 1fr 92px auto; }
-body.compact .bar-row { grid-template-columns: minmax(0, 110px) 1fr auto auto; }
-.bar-row .read { font: inherit; font-size: 11px; padding: 1px 7px; border-radius: 4px; border: 1px solid var(--border); background: transparent;
+.bar-row { position: relative; }
+.bar-row .read { position: absolute; right: 0; top: 50%; transform: translateY(-50%); font: inherit; font-size: 11px; padding: 1px 7px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface-1);
   color: var(--text-muted); cursor: pointer; opacity: 0; transition: opacity .12s; }
 .bar-row:hover .read, .bar-row .read:focus-visible { opacity: 1; }
 .bar-row .read:hover { color: var(--text-primary); border-color: var(--text-muted); }
@@ -319,6 +318,20 @@ body.compact .bar-row { grid-template-columns: minmax(0, 110px) 1fr auto auto; }
 .pwait { display: flex; align-items: center; gap: 10px; color: var(--text-secondary); padding: 18px 0; }
 .pwait .s { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--accent); animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+/* personalities overview (compact mode only) */
+.c-pers { display: none; }
+body.compact .c-pers { display: flex; grid-area: pers; }
+.share .c-pers { display: none !important; }
+body.compact .c-res { display: none; }
+body.compact .col { grid-template-rows: auto auto minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "live live" "pers pers" "talk act" "words tl"; }
+.share body.compact .col { grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "live live" "talk act" "words tl"; }
+.pers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 0 12px 10px; }
+.pers .pp { font: inherit; text-align: left; color: inherit; background: transparent; border: 1px solid var(--grid); border-radius: 4px; padding: 7px 9px; cursor: pointer; min-width: 0; }
+.pers .pp:hover { border-color: var(--text-muted); }
+.pers .pn { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pers .ps { font-size: 12px; color: var(--text-primary); margin-top: 3px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.pers .pt { font-size: 11px; color: var(--text-muted); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pers-empty { grid-column: 1 / -1; color: var(--text-muted); font-size: 12px; padding: 2px 0 4px; }
 /* ---------- house style: flat, dense, typographic (overrides the defaults above) */
 :root { --radius: 6px; --shadow: none; --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; }
 body { font-size: 13.5px; }
@@ -436,6 +449,10 @@ select, input[type=search] { border-radius: var(--radius); }
       <div class="card c-live">
         <div class="head"><h2>Live in Discord</h2><span class="meta" id="nowmeta"></span></div>
         <div class="now" id="now"><span class="empty" style="padding:4px 0">No one yet</span></div>
+      </div>
+      <div class="card c-pers" id="c-pers">
+        <div class="head"><h2>Personalities</h2><span class="meta" id="pers-meta">top speakers · local AI guess, just for fun</span></div>
+        <div class="pers" id="pers"></div>
       </div>
       <div class="card c-res">
         <div class="head"><h2>Resources</h2><span class="meta">this Mac · updated every 2 s</span></div>
@@ -670,7 +687,15 @@ function renderTimeline(s) {
   const endT = isToday() ? Date.now() : (lines[lines.length - 1]?.end || Date.now());
   const startT = endT - 10 * 60000;
   const recent = lines.filter((r) => r.end > startT);
-  const keys = [...new Set(recent.map((r) => keyOf.get(r)))].sort((a, b) => colorIndex.get(a) - colorIndex.get(b));
+  let keys = [...new Set(recent.map((r) => keyOf.get(r)))].sort((a, b) => colorIndex.get(a) - colorIndex.get(b));
+  if (compact) {   // small panel: keep the most active people that fit at a readable lane height
+    const fit = Math.max(1, Math.floor((Math.max(48, svg.parentElement.clientHeight - 14) - 22) / 13));
+    if (keys.length > fit) {
+      const talk = new Map(); for (const r of recent) talk.set(keyOf.get(r), (talk.get(keyOf.get(r)) || 0) + dur(r));
+      const keep = new Set([...talk].sort((a, b) => b[1] - a[1]).slice(0, fit).map((x) => x[0]));
+      keys = keys.filter((k) => keep.has(k));
+    }
+  }
   // compact mode: lanes shrink so the chart always fits its slot
   const room = compact ? Math.max(48, svg.parentElement.clientHeight - 14) : Infinity;   // fill the panel, no taller
   const lane = Math.max(compact ? 9 : 7, Math.min(compact ? 26 : 18, Math.floor((room - 22) / Math.max(1, keys.length)))), padL = 110, padB = 18, H = Math.max(40, keys.length * lane + padB + 4);
@@ -683,7 +708,8 @@ function renderTimeline(s) {
     out += `<text x="${padL - 8}" y="${yy + 12}" text-anchor="end" style="fill:var(--text-secondary)">${esc(Array.from(nameFor(k)).slice(0, 16).join(''))}</text><line x1="${padL}" x2="${W}" y1="${yy + 8}" y2="${yy + 8}" stroke="var(--grid)"/>`;
   });
   recent.forEach((r, idx) => {
-    const i = keys.indexOf(keyOf.get(r)), yy = 2 + i * lane + 2;
+    const i = keys.indexOf(keyOf.get(r)); if (i < 0) return;   // (someone left out to fit)
+    const yy = 2 + i * lane + 2;
     const x0 = Math.max(padL, x(r.t)), x1 = Math.max(x0 + 3, x(r.end));
     out += `<rect class="u" data-i="${idx}" x="${x0}" y="${yy}" width="${x1 - x0}" height="12" rx="4" fill="${colorFor(keyOf.get(r))}" ${filter && filter !== keyOf.get(r) ? 'opacity=".25"' : ''}/>`;
   });
@@ -1179,15 +1205,15 @@ async function personaRead(k) {
       <div class="btns">${btns}<button data-a="close">Close</button></div>`;
     box.querySelectorAll('button').forEach((b) => b.onclick = () => {
       if (b.dataset.a === 'close') close();
-      if (b.dataset.a === 'again') run();
+      if (b.dataset.a === 'again') run(true);
       if (b.dataset.a === 'copy') navigator.clipboard?.writeText(box.querySelector('.pbody').innerText).then(() => { b.textContent = 'Copied'; });
     });
   };
   bg.style.display = 'grid';
-  async function run() {
+  async function run(fresh = false) {
     if (personaInfo && !personaInfo.available) { frame('', `<p>${esc(personaInfo.reason || 'Not available on this computer.')}</p>`); return; }
     frame('Starting…', '<div class="pwait"><span class="s"></span>Reading what they said…</div>');
-    const q = new URLSearchParams({ day: c.day, from: c.start, to: c.end, ch: c.ch || '', user, name: speaker || name });
+    const q = new URLSearchParams({ day: c.day, from: c.start, to: c.end, ch: c.ch || '', user, name: speaker || name, ...(fresh ? { fresh: '1' } : {}) });
     const r = await fetch('/api/persona/start?' + q, { method: 'POST', headers: { 'X-CT': '1' } }).then((x) => x.json()).catch((e) => ({ error: String(e) }));
     if (closed) return;
     if (r.error) { frame('', `<p>${esc(r.error)}</p>`); return; }
@@ -1206,6 +1232,51 @@ async function personaRead(k) {
   }
   run();
 }
+// Compact mode: a one-line personality for each of the top speakers, refreshed as they talk.
+const persOverview = new Map();   // key -> { status, sentence, traits }
+let persBusy = false, persCallId = null;
+function persFields(text) {
+  const grab = (re) => (text.match(re)?.[1] || '').replace(/\*\*/g, '').trim();
+  return { sentence: grab(/in a sentence:\**\s*(.+)/i), traits: grab(/comes across as:\**\s*(.+)/i) };
+}
+function renderPers() {
+  const box = $('#pers'); if (!box) return;
+  if (personaInfo && !personaInfo.available) { box.innerHTML = `<div class="pers-empty">${esc(personaInfo.reason || 'Not available on this computer.')}</div>`; return; }
+  const top = stats().per.filter((p) => p.words >= 30).slice(0, 3);
+  if (!top.length) { box.innerHTML = '<div class="pers-empty">Appears once people have talked for a bit.</div>'; return; }
+  box.innerHTML = top.map((p) => {
+    const o = persOverview.get(p.k);
+    const body = o?.sentence ? `<div class="ps">${esc(o.sentence)}</div>${o.traits ? `<div class="pt">${esc(o.traits)}</div>` : ''}`
+      : `<div class="pt">${o?.status === 'error' ? 'Couldn\'t read this one.' : o ? 'Reading…' : 'Waiting…'}</div>`;
+    return `<button class="pp" data-k="${esc(p.k)}" title="Open the full read"><span class="pn"><span class="swatch" style="background:${colorFor(p.k)}"></span>${esc(nameFor(p.k))}</span>${body}</button>`;
+  }).join('');
+  box.querySelectorAll('.pp').forEach((b) => b.onclick = () => personaRead(b.dataset.k));
+}
+async function refreshPers() {
+  if (!compact || SHARE || persBusy || document.hidden) return;
+  if (personaInfo && !personaInfo.available) return renderPers();
+  const c = currentCall(); if (!c) return renderPers();
+  if (persCallId !== c.id) { persOverview.clear(); persCallId = c.id; }
+  persBusy = true;
+  try {
+    for (const p of stats().per.filter((x) => x.words >= 30).slice(0, 3)) {
+      const user = /^\d{15,22}$/.test(p.k) ? p.k : '';
+      const q = new URLSearchParams({ day: c.day, from: c.start, to: c.end, ch: c.ch || '', user, name: user ? nameFor(p.k) : String(p.k).replace(/^name:/, '') });
+      const r = await fetch('/api/persona/start?' + q, { method: 'POST', headers: { 'X-CT': '1' } }).then((x) => x.json()).catch(() => null);
+      if (!r || r.error) continue;
+      if (!persOverview.get(p.k)?.sentence) { persOverview.set(p.k, { status: 'working' }); renderPers(); }
+      for (let i = 0; i < 300; i++) {
+        const j = await fetch('/api/persona?id=' + r.id).then((x) => x.json()).catch(() => null);
+        if (!j) break;
+        if (j.status === 'done') { persOverview.set(p.k, { status: 'done', ...persFields(j.text) }); break; }
+        if (j.status === 'error') { if (!persOverview.get(p.k)?.sentence) persOverview.set(p.k, { status: 'error' }); break; }
+        await new Promise((res) => setTimeout(res, 1000));
+      }
+      renderPers();
+    }
+  } finally { persBusy = false; renderPers(); }
+}
+setInterval(refreshPers, 30000);
 function confirmBox(title, body, note, okLabel) {
   return new Promise((resolve) => {
     const bg = $('#modal'), box = bg.firstElementChild;
@@ -1302,6 +1373,7 @@ function setCompact(on, persist = true) {
   $('#toggle-compact').setAttribute('aria-pressed', String(compact));
   if (persist && !SHARE) try { localStorage.setItem('ct-compact', compact ? '1' : '0'); } catch {}
   requestAnimationFrame(() => { const s = stats(); renderActivity(s); renderTimeline(s); });
+  if (compact) setTimeout(() => { renderPers(); refreshPers(); }, 800);
 }
 $('#toggle-compact').onclick = () => setCompact(!compact);
 addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'k') { e.preventDefault(); setCompact(!compact); } });

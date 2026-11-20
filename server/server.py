@@ -661,6 +661,7 @@ class PersonalityReader:
         self.engine = None
         self.last_used = 0.0
         self.jobs: dict[str, dict] = {}
+        self.cache: dict[tuple, tuple[int, str]] = {}    # (day, call start, ch, who) -> (words, job id)
         threading.Thread(target=self._idle_unload, daemon=True).start()
 
     @staticmethod
@@ -723,7 +724,7 @@ class PersonalityReader:
                     gc.collect()
                     print("Personality read: model unloaded (idle).", flush=True)
 
-    def start(self, day: str, t0: int, t1: int, ch: str, user: str, name: str) -> dict:
+    def start(self, day: str, t0: int, t1: int, ch: str, user: str, name: str, fresh: bool = False) -> dict:
         eng, why = self.engine_here()
         if not eng:
             return {"error": why}
@@ -741,7 +742,15 @@ class PersonalityReader:
                 break
             picked.append(x)
         picked.reverse()
+        # Reuse a recent read of the same person in the same call unless they've said a lot more since.
+        ck = (day, t0, ch, user or name)
+        hit = self.cache.get(ck)
+        if hit and not fresh and words - hit[0] < 150:
+            old = self.jobs.get(hit[1])
+            if old and old["status"] in ("loading", "thinking", "done"):
+                return {"id": old["id"], **{k: old[k] for k in ("status", "lines", "words")}, "cached": True}
         jid = os.urandom(6).hex()
+        self.cache[ck] = (words, jid)
         job = {"id": jid, "status": "loading" if self.model is None else "thinking", "name": name,
                "lines": len(picked), "words": sum(len(x.split()) for x in picked), "model": LLM_NAME, "started": time.time()}
         self.jobs[jid] = job
@@ -1018,7 +1027,8 @@ async def main():
             try:
                 from urllib.parse import unquote
                 res = persona.start(params.get("day", ""), int(params.get("from", 0)), int(params.get("to", 0)),
-                                    unquote(params.get("ch", "")), unquote(params.get("user", "")), unquote(params.get("name", "")))
+                                    unquote(params.get("ch", "")), unquote(params.get("user", "")), unquote(params.get("name", "")),
+                                    fresh=params.get("fresh") == "1")
             except (ValueError, OSError) as e:
                 res = {"error": str(e)}
             return respond(res, status=400 if "error" in res else 200)
