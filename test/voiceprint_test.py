@@ -182,6 +182,9 @@ def main():
         print(f"{sc:>12}: false-flag rate {100*pf:4.1f}%   miss rate {100*vm:4.1f}% (after enrolment {100*vma:4.1f}%)")
         # Video first: until the person has talked more than the video, we can't
         # know which voice is theirs, so a few of their early lines may be flagged.
+        # The video must actually be judged and flagged (0 of 0 would pass the rates).
+        if tot[sc, "vaa"] == 0 or tot[sc, "vaa"] - tot[sc, "vma"] == 0:
+            fails.append(f"{sc}: no video utterance was flagged after enrolment")
         limit = 0.10 if sc == "video-first" else 0.05
         if pf > limit:
             fails.append(f"{sc}: false-flag rate {100*pf:.1f}% > {100*limit:.0f}%")
