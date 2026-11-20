@@ -27,7 +27,7 @@ function section(title, items) {
 
 window.picker.sources().then((s) => {
   list.textContent = '';
-  section('Call Transcriber', s.app);
+  section('Earshot', s.app);
   section('Screens', s.screens);
   section('Windows', s.windows);
   if (s.note) { const n = document.createElement('div'); n.className = 'sub'; n.style.marginTop = '12px'; n.textContent = s.note; list.appendChild(n); }

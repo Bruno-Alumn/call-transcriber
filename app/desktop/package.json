@@ -1,6 +1,6 @@
 {
   "name": "call-transcriber",
-  "productName": "Call Transcriber",
+  "productName": "Earshot",
   "version": "1.2.0",
   "private": true,
   "description": "Live per-speaker transcripts of Discord voice calls",

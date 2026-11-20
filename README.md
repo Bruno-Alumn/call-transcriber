@@ -71,13 +71,13 @@ dashboard next to the call, and no audio ever leaves your machine.
    cd ~/earshot/server && uv sync
    ~/earshot/app/mac/build.sh
    ```
-3. Open **Call Transcriber** from `~/Applications`.
+3. Open **Earshot** from `~/Applications`.
 
 **On a PC** (Windows 10 or 11, 64-bit):
 
 1. Run `git clone https://github.com/Bruno-Alumn/earshot.git %USERPROFILE%\Earshot`.
 2. Double-click **install.cmd** in that folder. The first run takes a few minutes: it installs Python, the speech model, the app and Node.js if it's missing, and adds Start-menu and desktop shortcuts.
-3. Start **Call Transcriber** from the Start menu.
+3. Start **Earshot** from the Start menu.
 
 With an NVIDIA graphics card the PC uses it for the most accurate model; without one it uses a CPU model at about 50× real time. [README-WINDOWS.md](README-WINDOWS.md) has the details.
 

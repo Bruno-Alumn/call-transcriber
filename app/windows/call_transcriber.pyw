@@ -1,4 +1,4 @@
-"""Call Transcriber for Windows: starts the desktop app (app/desktop, Electron).
+"""Earshot for Windows: starts the desktop app (app/desktop, Electron).
 
 Kept so that shortcuts and updates from older versions (which ran this file
 with pythonw) still open the app. Installs the app's Electron runtime with npm
@@ -21,9 +21,9 @@ def main():
         npm = shutil.which("npm.cmd") or shutil.which("npm")
         if not npm:
             import ctypes
-            ctypes.windll.user32.MessageBoxW(None, "Call Transcriber needs Node.js to finish updating.\n\n"
+            ctypes.windll.user32.MessageBoxW(None, "Earshot needs Node.js to finish updating.\n\n"
                                              "Install it from https://nodejs.org, then run install.cmd again.",
-                                             "Call Transcriber", 0x10)
+                                             "Earshot", 0x10)
             return
         subprocess.run([npm, "ci", "--no-audit", "--no-fund"], cwd=DESKTOP, creationflags=NO_WINDOW)
         subprocess.run(["node", "node_modules/electron/install.js"], cwd=DESKTOP, creationflags=NO_WINDOW)
@@ -36,7 +36,8 @@ def fix_shortcuts():
     """Point the Start-menu/desktop shortcuts straight at the app (no Python in between)."""
     ps = ("$s = New-Object -ComObject WScript.Shell; "
           "foreach ($d in @([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Desktop'))) { "
-          "$p = Join-Path $d 'Call Transcriber.lnk'; if (Test-Path $p) { $l = $s.CreateShortcut($p); "
+          "$old = Join-Path $d 'Call Transcriber.lnk'; $p = Join-Path $d 'Earshot.lnk'; "
+          "if ((Test-Path $old) -or (Test-Path $p)) { Remove-Item $old -ErrorAction SilentlyContinue; $l = $s.CreateShortcut($p); "
           f"$l.TargetPath = '{ELECTRON}'; $l.Arguments = '\"{DESKTOP}\"'; $l.WorkingDirectory = '{ROOT}'; "
           f"$l.IconLocation = '{ROOT / 'app' / 'windows' / 'icon.ico'}'; $l.Save() }} }}")
     subprocess.run(["powershell", "-NoProfile", "-Command", ps], creationflags=NO_WINDOW)

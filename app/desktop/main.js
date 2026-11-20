@@ -1,4 +1,4 @@
-// Call Transcriber desktop app (macOS + Windows, one codebase).
+// Earshot desktop app (macOS + Windows, one codebase).
 //
 //  - Owns the local transcription server: starts it on launch, stops it on
 //    quit (the server also watches our pid via --parent-pid).
@@ -25,7 +25,10 @@ const ICON_PNG = path.join(ROOT, 'app', 'windows', 'icon.png');
 const ICON_ICO = path.join(ROOT, 'app', 'windows', 'icon.ico');
 const BG = { dark: '#111110', light: '#f4f4f2' };
 
-app.setName('Call Transcriber');
+app.setName('Earshot');
+// Keep using the data folder from before the rename (sign-ins, accounts, settings).
+{ const old = path.join(app.getPath('appData'), 'Call Transcriber');
+  if (!TEST && fs.existsSync(old)) app.setPath('userData', old); }
 if (TEST && process.env.CT_USER_DATA) app.setPath('userData', process.env.CT_USER_DATA);
 if (IS_WIN) app.setAppUserModelId('local.calltranscriber');
 if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
@@ -369,7 +372,7 @@ const icon = () => (IS_WIN && fs.existsSync(ICON_ICO) ? ICON_ICO : fs.existsSync
 
 function createDashboard() {
   dash = new BrowserWindow({
-    width: 1320, height: 860, minWidth: 980, minHeight: 620, title: 'Call Transcriber', show: false,
+    width: 1320, height: 860, minWidth: 980, minHeight: 620, title: 'Earshot', show: false,
     backgroundColor: windowBg(), icon: icon(), autoHideMenuBar: true,
     webPreferences: { preload: path.join(__dirname, 'dashboard-preload.js'), contextIsolation: true, sandbox: true, backgroundThrottling: true },
   });
@@ -425,7 +428,7 @@ function openShareView(ch = '') {
     const have = shareWins.get(ch);
     if (have && !have.isDestroyed()) { have.showInactive(); resolve(have); return; }
     const w = new BrowserWindow({
-      width: 1280, height: 720, minWidth: 800, minHeight: 450, title: 'Call Transcriber — shared view',
+      width: 1280, height: 720, minWidth: 800, minHeight: 450, title: 'Earshot — shared view',
       backgroundColor: windowBg(), icon: icon(), autoHideMenuBar: true, show: false,
       webPreferences: { contextIsolation: true, sandbox: true, backgroundThrottling: false },
     });
@@ -494,7 +497,7 @@ ipcMain.handle('ct:picker-sources', async (e) => {
     windows = all.filter((x) => x.id.startsWith('window:') && !own.has(x.id) && x.name).map(item);
   } catch {}
   if (IS_MAC && systemPreferences.getMediaAccessStatus('screen') !== 'granted') {
-    note = 'To share a screen or another app, allow Call Transcriber in System Settings › Privacy & Security › Screen & System Audio Recording, then reopen it. The two Call Transcriber views work without that.';
+    note = 'To share a screen or another app, allow Earshot in System Settings › Privacy & Security › Screen & System Audio Recording, then reopen it. The two Call Transcriber views work without that.';
   }
   return { app: app_, screens, windows, note };
 });
@@ -648,7 +651,7 @@ async function relaunchAfterUpdate({ rebuild = false, deps = false, app: appDeps
     // The app bundle embeds Electron: rebuild it, then open the new copy.
     const code = await run('/bin/zsh', ['-lc', `"${path.join(ROOT, 'app', 'mac', 'build.sh')}"`]);
     if (code !== 0) { splash('The app rebuild failed. Run app/mac/build.sh in a terminal to see why.', { error: true, offerStart: true }); return; }
-    const bundle = path.join(process.env.CT_INSTALL_DIR || path.join(app.getPath('home'), 'Applications'), 'Call Transcriber.app');
+    const bundle = path.join(process.env.CT_INSTALL_DIR || path.join(app.getPath('home'), 'Applications'), 'Earshot.app');
     const envArgs = TEST ? Object.entries(process.env).filter(([k]) => k.startsWith('CT_')).flatMap(([k, v]) => ['--env', `${k}=${v}`]) : [];
     spawn('/usr/bin/open', ['-n', ...envArgs, bundle], { detached: true, stdio: 'ignore' }).unref();
   } else if (IS_WIN && appDeps) {
@@ -667,11 +670,11 @@ async function relaunchAfterUpdate({ rebuild = false, deps = false, app: appDeps
 // ----------------------------------------------------------------- menu / tray
 function buildMenu() {
   const t = [];
-  if (IS_MAC) t.push({ label: 'Call Transcriber', submenu: [
+  if (IS_MAC) t.push({ label: 'Earshot', submenu: [
     { role: 'about' }, { type: 'separator' },
     { label: 'Settings…', accelerator: 'Cmd+,', click: () => { showMain(); dash?.webContents.executeJavaScript('window.openSettings?.()').catch(() => {}); } },
     { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { type: 'separator' },
-    { label: 'Quit Call Transcriber (stops transcribing)', accelerator: 'Cmd+Q', click: quit },
+    { label: 'Quit Earshot (stops transcribing)', accelerator: 'Cmd+Q', click: quit },
   ] });
   t.push({ label: 'Discord', submenu: [
     { label: 'Show Discord', accelerator: 'CmdOrCtrl+D', click: () => showDiscord() },
@@ -716,9 +719,9 @@ function updateTray() {
   if (!tray) return;
   const calls = accounts.filter((a) => accountSummary(a).inCall).length;
   const state = !server ? 'server stopped' : paused ? 'paused' : calls ? `${calls} call${calls > 1 ? 's' : ''}` : 'ready';
-  tray.setToolTip(`Call Transcriber — ${state}`);
+  tray.setToolTip(`Earshot — ${state}`);
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Open Call Transcriber', click: showMain },
+    { label: 'Open Earshot', click: showMain },
     { label: 'Open Discord', click: () => showDiscord() },
     { type: 'separator' },
     { label: 'Mute call audio (keeps transcribing)', type: 'checkbox', checked: !!mainAccount()?.muted, click: (i) => setMuted(i.checked) },
@@ -755,6 +758,17 @@ app.whenReady().then(() => {
   accounts = loadAccounts(); saveAccounts();
   buildMenu();
   powerSaveBlocker.start('prevent-app-suspension');        // keep transcribing at full speed in the background
+  if (IS_WIN && !TEST) {      // shortcuts from before the rename: "Call Transcriber" -> "Earshot"
+    for (const dir of [path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs'), app.getPath('desktop')]) {
+      const old = path.join(dir, 'Call Transcriber.lnk');
+      try {
+        if (fs.existsSync(old)) {
+          shell.writeShortcutLink(path.join(dir, 'Earshot.lnk'), { target: process.execPath, args: `"${__dirname}"`, cwd: ROOT, icon: ICON_ICO, iconIndex: 0, description: 'Live transcripts of your voice calls' });
+          fs.unlinkSync(old);
+        }
+      } catch {}
+    }
+  }
   if (IS_WIN && fs.existsSync(ICON_PNG)) {
     tray = new Tray(nativeImage.createFromPath(ICON_PNG).resize({ width: 16, height: 16 }));
     tray.on('click', showMain);

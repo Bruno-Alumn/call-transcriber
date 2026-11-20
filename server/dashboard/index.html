@@ -301,7 +301,7 @@ body.compact #feedmeta { display: none; }
 .share #toggle-side, .share #toggle-compact, .share .pills, .share #banner,
 .share #q, .share #export, .share #copy, .share .c-res, .share #act-range, .share .c-talk .meta { display: none !important; }
 .share .where { font-size: 14px; }
-.share header::after { content: "Live transcript · Call Transcriber"; margin-left: auto; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.share header::after { content: "Live transcript · Earshot"; margin-left: auto; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
 /* ---------- personality read */
 .bar-row { position: relative; }
 .bar-row .read { position: absolute; right: 0; top: 50%; transform: translateY(-50%); font: inherit; font-size: 11px; padding: 1px 7px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface-1);
@@ -470,7 +470,7 @@ select, input[type=search] { border-radius: var(--radius); }
     <div class="brand" style="display:none">
       <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="var(--text-primary)"/>
         <g stroke="var(--bg)" stroke-width="2.4" stroke-linecap="round"><line x1="9" y1="13" x2="9" y2="19"/><line x1="13.5" y1="9" x2="13.5" y2="23"/><line x1="18" y1="12" x2="18" y2="20"/><line x1="22.5" y1="14.5" x2="22.5" y2="17.5"/></g></svg>
-      Call Transcriber
+      Earshot
     </div>
     <div class="where" id="where"></div>
     <div class="pills">
@@ -879,7 +879,7 @@ function popHtml(which) {
   const st = liveState;
   const btns = (list) => inApp ? `<div class="btns">${list.map(([a, l, cls]) => `<button data-a="${a}" class="${cls || ''}">${l}</button>`).join('')}</div>` : '';
   if (which === 'server') {
-    if (!st) return `<h3>Server stopped</h3><div class="hint">${inApp ? 'Start it to begin transcribing.' : 'Open the Call Transcriber app (or run start.sh).'}</div>${btns([['start', 'Start server']])}`;
+    if (!st) return `<h3>Server stopped</h3><div class="hint">${inApp ? 'Start it to begin transcribing.' : 'Open the Earshot app.'}</div>${btns([['start', 'Start server']])}`;
     return `<h3>Transcription server</h3><dl>
       <dt>Status</dt><dd>Running</dd><dt>Up for</dt><dd>${fmtDur(st.uptime)}</dd><dt>Process</dt><dd>pid ${st.pid}</dd>
       <dt>Queue</dt><dd>${st.queue} waiting</dd><dt>Address</dt><dd>${location.host}</dd>
@@ -891,7 +891,7 @@ function popHtml(which) {
   if (which === 'ext') {
     if (!st) return `<h3>Discord</h3><div class="hint">Waiting for the server.</div>`;
     const e = st.ext || {};
-    const hint = !e.connected ? (desk ? 'The Discord window isn\'t connected yet.' : 'Open the Call Transcriber app.')
+    const hint = !e.connected ? (desk ? 'The Discord window isn\'t connected yet.' : 'Open the Earshot app.')
       : appState.paused || e.paused ? 'Paused: nothing is being transcribed until you resume.'
       : !e.discordTab ? 'Discord is loading (sign in once in the Discord window).'
       : !e.inCall ? 'Join a voice channel in the Discord window and transcription starts automatically.' : 'Transcribing everyone in the call.';

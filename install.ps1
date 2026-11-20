@@ -1,4 +1,4 @@
-# Call Transcriber - Windows installer.
+# Earshot - Windows installer.
 # Double-click install.cmd (it runs this script). Safe to run again to update.
 #   1. installs uv (Python manager) if missing
 #   2. installs Python 3.12 + the server's packages into server\.venv
@@ -17,7 +17,7 @@ $Icon = Join-Path $Root 'app\windows\icon.ico'
 
 function Step($text) { Write-Host ''; Write-Host "==> $text" -ForegroundColor Cyan }
 
-Step "Installing Call Transcriber in $Root"
+Step "Installing Earshot in $Root"
 
 # 1. uv --------------------------------------------------------------------
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
@@ -86,7 +86,7 @@ if ($have -eq $want -and (Test-Path $Exe)) {
     Write-Host "App runtime (Electron $want) already installed."
 } else {
     if (Get-Process electron -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $Exe }) {
-        throw 'Quit Call Transcriber first (tray icon > Quit), then run install.cmd again.'
+        throw 'Quit Earshot first (tray icon > Quit), then run install.cmd again.'
     }
     Push-Location $Desk
     try {
@@ -103,7 +103,7 @@ Step 'Creating Start menu and desktop shortcuts'
 $shell = New-Object -ComObject WScript.Shell
 $places = @([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Desktop'))
 foreach ($dir in $places) {
-    $lnk = $shell.CreateShortcut((Join-Path $dir 'Call Transcriber.lnk'))
+    $lnk = $shell.CreateShortcut((Join-Path $dir 'Earshot.lnk'))
     $lnk.TargetPath = $Exe
     $lnk.Arguments = '"' + $Desk + '"'
     $lnk.WorkingDirectory = $Root
@@ -113,7 +113,7 @@ foreach ($dir in $places) {
 }
 
 Write-Host ''
-Write-Host 'Done. Start "Call Transcriber" from the Start menu or desktop, sign in to Discord in its Discord window (once), and join a voice channel.' -ForegroundColor Green
+Write-Host 'Done. Start "Earshot" from the Start menu or desktop, sign in to Discord in its Discord window (once), and join a voice channel.' -ForegroundColor Green
 if ($NoPrompt) { return }
-$answer = Read-Host 'Start Call Transcriber now? (Y/n)'
+$answer = Read-Host 'Start Earshot now? (Y/n)'
 if ($answer -ne 'n' -and $answer -ne 'N') { Start-Process $Exe -ArgumentList ('"' + $Desk + '"') -WorkingDirectory $Root }

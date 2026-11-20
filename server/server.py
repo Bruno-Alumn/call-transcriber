@@ -1,4 +1,4 @@
-"""Local transcription server for Call Transcriber.
+"""Local transcription server for Earshot.
 
 The desktop app sends each call participant's audio as its own stream
 (16 kHz mono int16, tagged with their Discord user id and name). Per person,
