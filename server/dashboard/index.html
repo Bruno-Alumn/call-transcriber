@@ -294,6 +294,71 @@ body.compact .c-tl .body { overflow: hidden; }
   .app { height: auto; }
   .feed { max-height: 60vh; }
 }
+/* ---------- house style: flat, dense, typographic (overrides the defaults above) */
+:root { --radius: 6px; --shadow: none; --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; }
+body { font-size: 13.5px; }
+.card, .kpi { box-shadow: none; }
+.card { border-radius: var(--radius); }
+.card .head { padding: 10px 14px 6px; }
+.card h2 { font-size: 12px; font-weight: 600; color: var(--text-secondary); letter-spacing: 0; }
+.card .head .meta { font-size: 11.5px; }
+/* KPIs: one ruled strip instead of five boxes */
+.kpis { gap: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-1); }
+.kpi { border: 0; border-radius: 0; background: transparent; padding: 10px 14px; }
+.kpi + .kpi { border-left: 1px solid var(--border); }
+.kpi .label { font-size: 11.5px; font-weight: 500; color: var(--text-muted); letter-spacing: 0; }
+.kpi .value { font-family: var(--mono); font-size: 22px; font-weight: 500; letter-spacing: -.02em; }
+body.compact .kpi .value { font-size: 16px; }
+/* header status: plain text buttons with a square status mark */
+.pill { border-radius: var(--radius); background: transparent; border: 1px solid transparent; padding: 4px 8px; color: var(--text-secondary); }
+.pill:hover { border-color: var(--border); background: var(--surface-1); }
+.pill .dot { width: 7px; height: 7px; border-radius: 1.5px; }
+.pill.ok .dot { box-shadow: none; }
+.pill.discord-btn { background: var(--surface-1); color: var(--text-primary); border-color: var(--border); font-weight: 500; }
+.pill.discord-btn:hover { background: var(--surface-2); border-color: var(--text-muted); }
+.pill.discord-btn svg { color: #5865f2; }
+#p-mute { border-color: var(--border); background: var(--surface-1); }
+#p-mute.on { background: var(--surface-1); border-color: var(--bad); color: var(--bad); }
+.iconbtn { border-radius: var(--radius); height: 30px; }
+select, input[type=search] { border-radius: var(--radius); }
+/* transcript: monospaced timestamps, quieter hover */
+.line { border-radius: 4px; }
+.line .time { font-family: var(--mono); font-size: 11.5px; }
+.line .who { font-weight: 600; }
+.swatch { border-radius: 2px; }
+.live-dot { width: 7px; height: 7px; border-radius: 1.5px; }
+/* who's in the call: flat tags */
+.chip { border-radius: 4px; padding: 3px 8px; gap: 7px; background: transparent; border: 1px solid var(--border); color: var(--text-muted); }
+.chip .sw { width: 8px; height: 8px; border-radius: 2px; flex: none; opacity: .55; }
+.chip.talking { color: var(--text-primary); border-color: var(--text-secondary); }
+.chip.talking .sw { opacity: 1; }
+/* bars and word list */
+.bar-row .track { height: 6px; border-radius: 1px; }
+.bar-row .fill { border-radius: 1px; }
+.bar-row .num { font-family: var(--mono); font-size: 11.5px; }
+.word { border-bottom: 1px solid var(--grid); padding: 2px 0; }
+.word .w { padding: 2px 0 4px; border-radius: 0; }
+.word .w i { top: auto; height: 2px; background: var(--accent); opacity: .5; border-radius: 0; }
+.word .w b { font-weight: 500; }
+.word .c { font-family: var(--mono); font-size: 11.5px; }
+.res .m { border-radius: 4px; background: transparent; border: 1px solid var(--grid); }
+.res .m .v { font-family: var(--mono); font-weight: 500; }
+.seg { border-radius: var(--radius); }
+.seg button { border-radius: 4px; }
+.seg button.on { box-shadow: none; outline: 1px solid var(--border); }
+/* sidebar */
+.side .top h1 { font-weight: 600; }
+.srv .ic { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); border-radius: 4px; font-weight: 600; }
+.srv .nm { font-weight: 600; }
+.call, .srv, .chn, .hit { border-radius: 4px; }
+.call.on { background: var(--surface-2); border-color: var(--border); }
+.badge { background: transparent; color: var(--bad); border: 1px solid currentColor; border-radius: 3px; font-weight: 600; padding: 0 4px; }
+.faces span { border-radius: 3px; }
+/* popovers, menus, dialogs */
+.pop, .ctx, .modal { border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.18); }
+.pop button, .modal button, .banner button, .mrow button { border-radius: 5px; }
+.mrow, .banner { border-radius: 6px; }
+.tip { border-radius: 6px; }
 </style>
 </head>
 <body>
@@ -301,8 +366,7 @@ body.compact .c-tl .body { overflow: hidden; }
 <aside class="side">
   <div class="top">
     <div class="row">
-      <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><defs><linearGradient id="g2" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5865f2"/><stop offset="1" stop-color="#3987e5"/></linearGradient></defs>
-        <rect width="32" height="32" rx="9" fill="url(#g2)"/><g stroke="#fff" stroke-width="2.4" stroke-linecap="round"><line x1="9" y1="13" x2="9" y2="19"/><line x1="13.5" y1="9" x2="13.5" y2="23"/><line x1="18" y1="12" x2="18" y2="20"/><line x1="22.5" y1="14.5" x2="22.5" y2="17.5"/></g></svg>
+      <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><rect width="32" height="32" rx="7" fill="var(--text-primary)"/><g stroke="var(--bg)" stroke-width="2.4" stroke-linecap="round"><line x1="9" y1="13" x2="9" y2="19"/><line x1="13.5" y1="9" x2="13.5" y2="23"/><line x1="18" y1="12" x2="18" y2="20"/><line x1="22.5" y1="14.5" x2="22.5" y2="17.5"/></g></svg>
       <h1>Calls</h1>
     </div>
     <input type="search" id="hq" placeholder="Search all calls…" aria-label="Search all calls">
@@ -314,9 +378,8 @@ body.compact .c-tl .body { overflow: hidden; }
     <button class="iconbtn" id="toggle-side" title="Show/hide calls (⌘\\)" aria-label="Show or hide the calls list">☰</button>
     <button class="iconbtn" id="toggle-compact" title="Compact mode: everything on one screen (⌘⇧K / Ctrl+Shift+K)" aria-label="Compact mode" aria-pressed="false"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M2 2.75C2 2.34 2.34 2 2.75 2h4.5c.41 0 .75.34.75.75v10.5c0 .41-.34.75-.75.75h-4.5A.75.75 0 0 1 2 13.25V2.75Zm7 0c0-.41.34-.75.75-.75h3.5c.41 0 .75.34.75.75v3.5c0 .41-.34.75-.75.75h-3.5A.75.75 0 0 1 9 6.25v-3.5Zm0 6.5c0-.41.34-.75.75-.75h3.5c.41 0 .75.34.75.75v4c0 .41-.34.75-.75.75h-3.5a.75.75 0 0 1-.75-.75v-4Z"/></svg></button>
     <div class="brand" style="display:none">
-      <svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5865f2"/><stop offset="1" stop-color="#3987e5"/></linearGradient></defs>
-        <rect width="32" height="32" rx="9" fill="url(#g)"/>
-        <g stroke="#fff" stroke-width="2.4" stroke-linecap="round"><line x1="9" y1="13" x2="9" y2="19"/><line x1="13.5" y1="9" x2="13.5" y2="23"/><line x1="18" y1="12" x2="18" y2="20"/><line x1="22.5" y1="14.5" x2="22.5" y2="17.5"/></g></svg>
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="var(--text-primary)"/>
+        <g stroke="var(--bg)" stroke-width="2.4" stroke-linecap="round"><line x1="9" y1="13" x2="9" y2="19"/><line x1="13.5" y1="9" x2="13.5" y2="23"/><line x1="18" y1="12" x2="18" y2="20"/><line x1="22.5" y1="14.5" x2="22.5" y2="17.5"/></g></svg>
       Call Transcriber
     </div>
     <div class="where" id="where"></div>
@@ -324,7 +387,7 @@ body.compact .c-tl .body { overflow: hidden; }
       <button class="pill" id="p-server" aria-haspopup="dialog"><span class="dot"></span><span>Server</span></button>
       <button class="pill" id="p-ext" aria-haspopup="dialog"><span class="dot"></span><span>Extension</span></button>
       <button class="pill" id="p-model" aria-haspopup="dialog"><span class="dot"></span><span>Model</span></button>
-      <button class="pill" id="p-mute" hidden title="Mute the call for you; transcription still hears everyone (⌘⇧M / Ctrl+Shift+M)"><span id="p-mute-ic">🔊</span><span id="p-mute-t">Call audio</span></button>
+      <button class="pill" id="p-mute" hidden title="Mute the call for you; transcription still hears everyone (⌘⇧M / Ctrl+Shift+M)"><span id="p-mute-ic"></span><span id="p-mute-t">Call audio</span></button>
       <button class="pill discord-btn" id="p-discord" hidden title="Show the Discord window (⌘D / Ctrl+D)"><svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M19.3 5.3A16.6 16.6 0 0 0 15.2 4l-.5 1a15 15 0 0 0-5.4 0L8.8 4a16.5 16.5 0 0 0-4.1 1.3C2.1 9.2 1.4 13 1.7 16.7a16.7 16.7 0 0 0 5 2.6l1.1-1.7a11 11 0 0 1-1.7-.8l.4-.3a11.9 11.9 0 0 0 11 0l.4.3-1.7.8 1.1 1.7a16.6 16.6 0 0 0 5-2.6c.4-4.3-.7-8-3-11.4ZM8.7 14.5c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm6.6 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z"/></svg><span>Discord</span></button>
     </div>
   </header>
@@ -676,7 +739,7 @@ function renderState() {
   $('#now').innerHTML = ppl.length ? ppl.map((p) => {
     const c = colorIndex.has(p.user) ? colorFor(p.user) : 'var(--other)';
     const initials = (p.name.replace(/[^\p{L}\p{N} ]/gu, '').trim().split(/\s+/).map((w) => w[0]).join('').slice(0, 2) || '?').toUpperCase();
-    return `<span class="chip${p.talking ? ' talking' : ''}" title="${p.talking ? 'Talking now' : 'Last heard ' + fmtTime(p.lastSeen)}"><span class="av" style="background:${c}">${esc(initials)}</span>${esc(p.name)}</span>`;
+    return `<span class="chip${p.talking ? ' talking' : ''}" title="${p.talking ? 'Talking now' : 'Last heard ' + fmtTime(p.lastSeen)}"><span class="sw" style="background:${c}"></span>${esc(p.name)}</span>`;
   }).join('') : '<span class="empty" style="padding:4px 0">No one yet</span>';
   if (st.res?.cpu != null) { resHist.push({ t: st.now, cpu: st.res.cpu, rss: st.res.rssMB }); while (resHist.length && st.now - resHist[0].t > 300000) resHist.shift(); }
   renderResources(); refreshPop();
@@ -798,9 +861,11 @@ if (desk) {
   $('#p-discord').hidden = false; $('#p-discord').onclick = () => desk.openDiscord();
   $('#p-mute').hidden = false; $('#p-mute').onclick = () => desk.setMuted(!appState.muted);
 }
+const ICON_SOUND = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M7.4 2.6a.6.6 0 0 1 1 .45v9.9a.6.6 0 0 1-1 .45L4.6 10.9H2.6a.6.6 0 0 1-.6-.6V5.7c0-.33.27-.6.6-.6h2l2.8-2.5Zm3.2 2.1a.6.6 0 0 1 .85 0 4.6 4.6 0 0 1 0 6.6.6.6 0 1 1-.85-.85 3.4 3.4 0 0 0 0-4.9.6.6 0 0 1 0-.85Z"/></svg>';
+const ICON_MUTED = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M7.4 2.6a.6.6 0 0 1 1 .45v9.9a.6.6 0 0 1-1 .45L4.6 10.9H2.6a.6.6 0 0 1-.6-.6V5.7c0-.33.27-.6.6-.6h2l2.8-2.5Zm3.03 3.13a.6.6 0 0 1 .85 0L12.5 6.95l1.22-1.22a.6.6 0 1 1 .85.85L13.35 7.8l1.22 1.22a.6.6 0 1 1-.85.85L12.5 8.65l-1.22 1.22a.6.6 0 1 1-.85-.85l1.22-1.22-1.22-1.22a.6.6 0 0 1 0-.85Z"/></svg>';
 function renderMute() {
   if (!desk) return;
-  $('#p-mute-ic').textContent = appState.muted ? '🔇' : '🔊';
+  $('#p-mute-ic').innerHTML = appState.muted ? ICON_MUTED : ICON_SOUND;
   $('#p-mute-t').textContent = appState.muted ? 'Muted' : 'Call audio';
   $('#p-mute').classList.toggle('on', !!appState.muted);
 }
@@ -1186,6 +1251,18 @@ function connect() {
 setInterval(() => { if (isToday() && lines.length) { const s = stats(); renderActivity(s); renderTimeline(s); } }, 5000);
 setInterval(() => renderCalls(), 30000);     // "LIVE" badge & durations age out
 addEventListener('resize', () => { const s = stats(); renderActivity(s); renderTimeline(s); });
+// Charts follow their panel's size (compact-mode panels resize as content and the window change).
+if (window.ResizeObserver) {
+  let raf = 0, last = '';
+  const ro = new ResizeObserver(() => {
+    const key = ['#act', '#tl'].map((q) => { const e = $(q).parentElement; return e.clientWidth + 'x' + e.clientHeight; }).join('|');
+    if (key === last) return; last = key;
+    cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(() => { if (lines.length) { const s = stats(); renderActivity(s); renderTimeline(s); } });
+  });
+  ro.observe($('#act').parentElement); ro.observe($('#tl').parentElement);
+}
+
 renderState(); connect();
 </script>
 </body>
