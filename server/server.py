@@ -66,8 +66,17 @@ def tidy(text: str) -> str:
 # back to the loudness gate alone.
 VAD_REPO, VAD_FILE = "onnx-community/silero-vad", "onnx/model.onnx"
 VAD_WINDOW, VAD_CONTEXT = 512, 64   # samples per score (32 ms at 16 kHz); samples of the previous window in front
-VAD_FLOOR = 0.25                    # x the loudness threshold: quieter than this is never scored (see push)
-VAD_MIN_VOICED_MS = 250             # an utterance needs this much speech-scored audio to be transcribed (see flush)
+# Loudness bars, as multiples of the speech threshold (which sensitivity sets).
+# The VAD tells speech from noise, not this person from a quiet voice in their
+# room (TV, a roommate, other people leaking back through their speakers), so
+# an utterance still has to start as loud as the threshold; once it is going,
+# quieter audio may continue it (soft words, trailing off), but only down to
+# VAD_REL of the utterance's own level.
+VAD_START = 1.0                     # x threshold: an utterance starts only above this (and with speech)
+VAD_FLOOR = 0.25                    # x threshold: below this nothing continues an utterance
+VAD_WARM = 0.5                      # x threshold: between utterances, quieter than this isn't scored
+VAD_REL = 0.15                      # x the utterance's level (-16 dB): quieter audio doesn't continue it
+VAD_MIN_VOICED_MS = 160             # an utterance needs this much speech-scored audio to be transcribed (see flush)
 
 
 class Vad:
@@ -151,6 +160,9 @@ class Segmenter:
         self.vad = VadStream()
         self.voiced_ms = 0.0         # VAD-scored speech in the current utterance
         self.cur_vad = False         # the current utterance was started by the VAD
+        self.level = 0.0             # typical loudness of the current utterance's speech
+        self.carry = False           # the last utterance was cut at max_ms: what follows continues it
+        self.cur_carry = False       # the current utterance is such a continuation
         self.dropped = 0             # utterances the VAD found too little speech in
 
     def push(self, t: float, pcm: np.ndarray):
@@ -162,23 +174,28 @@ class Segmenter:
         self.last_end = t + dur
         if gap > 300:
             self.vad.reset()                     # unrelated audio follows: start the VAD fresh
-            if self.cur:
+            if self.cur or self.carry:
                 self.silent_ms += gap
                 if self.silent_ms >= self.silence_ms:
                     self.flush()
+                    self.carry = False           # (a pause this long ends a carry too)
         rms = float(np.sqrt(np.mean(pcm * pcm))) if len(pcm) else 0.0
         score = Vad.model if self.vad_threshold is not None else None
         voiced = 0
+        going = bool(self.cur) or self.carry
         if score is None:
             speech = rms > max(self.threshold, self.noise * 3)
-        elif rms > self.threshold * VAD_FLOOR or self.cur:
-            # Loud enough to be a voice (or mid-utterance, where the VAD's
+        elif rms > self.threshold * VAD_WARM or going:
+            # Near a voice's loudness (or mid-utterance, where the VAD's
             # memory of the voice matters): ask the model. Silero is slow to
             # rise at onsets, so once speaking, a lower bar keeps it going.
             probs = self.vad.feed(score, pcm)
             voiced = sum(p > self.vad_threshold for p in probs)
-            stay = self.vad_threshold - 0.15 if self.cur else self.vad_threshold
-            speech = rms > self.threshold * VAD_FLOOR and any(p > stay for p in probs)
+            stay = self.vad_threshold - 0.15 if going else self.vad_threshold
+            bar = max(self.threshold * VAD_FLOOR, self.level * VAD_REL) if going else self.threshold * VAD_START
+            speech = rms > bar and any(p > stay for p in probs)
+            if speech:
+                self.level = 0.8 * self.level + 0.2 * rms if going else rms
         else:
             self.vad.reset()                     # quiet, between utterances: nothing worth remembering
             speech = False
@@ -188,15 +205,22 @@ class Segmenter:
             self.cur.append((t, pcm))
             self.voiced_ms += voiced * VAD_WINDOW / SR * 1000
             self.silent_ms = 0 if speech else self.silent_ms + dur
-            if self.silent_ms >= self.silence_ms or self.cur[-1][0] + dur - self.cur[0][0] >= self.max_ms:
+            if self.silent_ms >= self.silence_ms:
                 self.flush()
+            elif self.cur[-1][0] + dur - self.cur[0][0] >= self.max_ms:
+                self.flush()
+                self.carry = True                # mid-speech cut: the rest is the same person still talking
         elif speech:
             self.cur = list(self.pre) + [(t, pcm)]
             self.pre.clear()
             self.silent_ms = 0
             self.voiced_ms = voiced * VAD_WINDOW / SR * 1000
             self.cur_vad = score is not None
+            self.cur_carry, self.carry = self.carry, False
         else:
+            if self.carry:                       # a pause after the cut: still the same talk until it's a long one
+                self.silent_ms += dur
+                self.carry = self.silent_ms < self.silence_ms
             self.pre.append((t, pcm))
             while self.pre and t - self.pre[0][0] > self.preroll_ms:
                 self.pre.popleft()
@@ -212,11 +236,19 @@ class Segmenter:
         for t, p in self.cur:
             marks.append((off, t)); off += len(p)
         self.cur, self.silent_ms = [], 0
-        # A word as short as "yes" or "no" scores 250+ ms of speech; a cough,
-        # a click or a breath that fooled the VAD for a window or two doesn't.
-        if self.cur_vad and self.voiced_ms < VAD_MIN_VOICED_MS:
+        self.carry = False
+        # A quick "no" or "yes" scores about 250 ms of speech; a cough, a click
+        # or a breath that fooled the VAD for a window or two doesn't. (The
+        # tail of a talk cut at max_ms is exempt: it can be one short word.)
+        if self.cur_vad and not self.cur_carry and self.voiced_ms < VAD_MIN_VOICED_MS:
             self.dropped += 1
+            print(f"  Speech detection: dropped a {len(audio) / SR:.1f} s sound with only "
+                  f"{self.voiced_ms:.0f} ms of speech ({self.dropped} so far for this person)", flush=True)
             return
+        if self.cur_vad and self.cur_carry and len(audio) < SR * 0.4:
+            # The last word of a talk cut at max_ms can be a single chunk:
+            # pad it with silence rather than lose it to the length minimum.
+            audio = np.pad(audio, (0, int(SR * 0.4) - len(audio)))
         if len(audio) >= SR * 0.4:
             self.out.put((t0, audio, self.label, self.uid, self.channel, marks))
 
