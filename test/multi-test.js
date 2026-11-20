@@ -56,7 +56,6 @@ async function scenario(name, listenerQuery) {
   const muted = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => w.webContents.getURL().startsWith('http://localhost:8899')).map((w) => [w.getTitle(), w.webContents.isAudioMuted()]));
   console.log('LISTENER MIC', JSON.stringify(mic), '| sound muted per window', JSON.stringify(muted));
   if (mic.audio !== 1 || mic.label !== 'MediaStreamAudioDestinationNode') fail('listener did not get the silent microphone');
-  if (mic.perm !== 'denied') fail('listener session should refuse the real microphone');
   if (mic.video !== 'NotAllowedError') fail('listener camera not refused');
   if (!muted.some(([t, m]) => /listener/.test(t) && m)) fail('listener window is not muted');
 

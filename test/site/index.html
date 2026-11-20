@@ -120,6 +120,8 @@ document.getElementById('join').onclick = () => (async () => {
   addSpeaker('alice', a, 1.0, uid('111111111111111111') + '-1001');
   addSpeaker('bob', b, 2.0, uid('222222222222222222') + '-1002');
   addSpeaker('carol', c3, 2.5, uid('333333333333333333') + '-1003');
+  // ?dup=1: a second track for Bob carrying the same audio (what a reconnect can leave behind)
+  if (Q.get('dup') === '1') addSpeaker('bobdup', b, 2.03, uid('222222222222222222') + '-1099');
   await negotiate();
   window.__present = { [CH_A1]: ['111111111111111111', '222222222222222222', '333333333333333333'].map(uid), [CH_A2]: ['444444444444444444'].map(uid) };
   if (SET_B) window.__present[CH_A1] = ['111111111111111111', '222222222222222222', '333333333333333333', '444444444444444444'].map(uid);

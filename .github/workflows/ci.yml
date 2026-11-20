@@ -48,6 +48,9 @@ jobs:
       - name: End-to-end test (3 overlapping speakers, names, channel)
         working-directory: server
         run: uv run python ../test/server_e2e.py --engine onnx
+      - name: Timing test (lines split at the right times)
+        working-directory: server
+        run: uv run python ../test/timing_test.py --engine onnx
       - name: Transcript order test (spoken order, not transcription order)
         working-directory: server
         run: uv run python ../test/order_test.py
@@ -62,6 +65,10 @@ jobs:
         shell: bash
         env: { SERVER_ARGS: "--engine onnx" }
         run: node test/app-test.js "$RUNNER_TEMP/app-test"
+      - name: Duplicate track test (two tracks for one person must not mix their audio)
+        shell: bash
+        env: { SERVER_ARGS: "--engine onnx", SITE_QUERY: "?dup=1" }
+        run: node test/app-test.js "$RUNNER_TEMP/dup-test"
       - name: Multi-account test (two calls at once, shared channel, listener mic, transcribe a channel)
         shell: bash
         env: { SERVER_ARGS: "--engine onnx" }

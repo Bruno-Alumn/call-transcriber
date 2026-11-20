@@ -28,7 +28,7 @@ const fail = (msg) => { console.log('FAIL', msg); process.exitCode = 1; };
 (async () => {
   const app = await electron.launch({
     executablePath: exe, args: [DESKTOP],
-    env: { ...process.env, CT_TEST: '1', CT_PORT: String(PORT), CT_DISCORD_URL: 'http://localhost:8899/',
+    env: { ...process.env, CT_TEST: '1', CT_PORT: String(PORT), CT_DISCORD_URL: 'http://localhost:8899/' + (process.env.SITE_QUERY || ''),
       CT_SERVER_ARGS: `--out ${OUT} ${process.env.SERVER_ARGS || ''}`, CT_USER_DATA: path.join(SCRATCH, 'userdata'),
       CT_SHOW: process.env.SHOW || '0', CT_SHARE_PICK: 'app:share' },
   });
@@ -97,7 +97,7 @@ const fail = (msg) => { console.log('FAIL', msg); process.exitCode = 1; };
     console.log('SHARED VIEW hides private controls:', hidden.every((d) => d === 'none'), 'page scroll:', await shareView.evaluate(() => document.documentElement.scrollHeight - innerHeight));
     if (!hidden.every((d) => d === 'none')) fail('shared view shows private controls');
   }
-  const hook = await discord.evaluate(() => ({ capture: window.__dtHook.capture, tracks: window.__dtHook.tracks, chunks: window.__dtHook.chunks, errors: window.__dtHook.errors, names: window.__dtHook.names }));
+  const hook = await discord.evaluate(() => ({ capture: window.__dtHook.capture, tracks: window.__dtHook.tracks, chunks: window.__dtHook.chunks, errors: window.__dtHook.errors, names: window.__dtHook.names, dupDropped: window.__dtHook.dupDropped || 0 }));
   console.log('PAGE', JSON.stringify(hook));
   if (dash) {
     const d = await dash.evaluate(() => ({ url: location.href, ctApp: typeof window.ctApp, keys: window.ctApp && Object.keys(window.ctApp) }));
@@ -135,6 +135,10 @@ const fail = (msg) => { console.log('FAIL', msg); process.exitCode = 1; };
   for (const l of lines) console.log(`  ${l.speaker.padEnd(8)} [${l.chName || l.ch}] ${l.text}`);
   const speakers = new Set(lines.map((l) => l.speaker));
   for (const s of ['Alice', 'Bob', 'Carol', 'Dave']) if (![...speakers].some((x) => x.toLowerCase().startsWith(s.toLowerCase()))) fail('missing speaker ' + s);
+  const doubled = lines.filter((l) => /\b(\w+) \1\b/i.test(l.text) || l.text.split(' ').length > 25);
+  if (doubled.length) fail('the same speech was mixed in twice: ' + doubled.map((l) => l.text).join(' | '));
+  const bob = lines.filter((l) => l.speaker === 'Bob').length;
+  if (bob > 3) fail('Bob was transcribed more than once per thing he said: ' + bob + ' lines');
   if (process.exitCode !== 1) console.log('PASS');
   else console.log(logs.join('').split('\n').slice(-30).join('\n'));
 })().catch((e) => { console.error(e); process.exit(1); });

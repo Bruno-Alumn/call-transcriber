@@ -7,7 +7,8 @@ const { ipcRenderer, webFrame } = require('electron');
 // 1. The hook, in the page's main world, at document start. (Run as privileged
 //    injection, so Discord's Content-Security-Policy doesn't apply to it.)
 //    Listener accounts first get a silent microphone and no camera (see main.js).
-const hook = ipcRenderer.sendSync('ct:hook-source') || {};
+let hook = ipcRenderer.sendSync('ct:hook-source') || {};
+if (typeof hook === 'string') hook = { src: hook };   // an older app (before restarting after an update) sends just the code
 if (hook.src) webFrame.executeJavaScript(hook.src).catch(() => {});
 
 // 2. The bridge (what content.js + background.js do in Chrome).

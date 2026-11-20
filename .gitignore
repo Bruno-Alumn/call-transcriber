@@ -25,3 +25,6 @@ judge/
 # your own plugins stay local; the examples ship with the app
 plugins/*
 !plugins/example-*
+
+# per-install settings (written by the app)
+settings.json

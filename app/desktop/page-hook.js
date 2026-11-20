@@ -277,7 +277,15 @@
   const wallOf = (ctxTime) => (wallAtZero || (syncClock(), wallAtZero) || Date.now() - ctx.currentTime * 1000) + ctxTime * 1000;
   document.addEventListener('pointerdown', () => ctx && ctx.resume().catch(() => {}), true);
 
+  // One audio source per person: Discord sometimes keeps two tracks for someone
+  // (a reconnect, or a stream with sound). Two readers feeding one person mixes
+  // the same speech twice; keep the reader that has been talking, until it has
+  // been quiet for 1.5 s.
+  const owner = new Map();             // user id -> { entry, at }
   function emit(entry, t, pcm, rms) {
+    const own = owner.get(entry.userId), now = Date.now();
+    if (own && own.entry !== entry && now - own.at < 1500 && readers.has(own.entry.trackId)) { H.dupDropped = (H.dupDropped || 0) + 1; return; }
+    owner.set(entry.userId, { entry, at: now });
     if (rms > 0.01) lastActive.set(entry.userId, Date.now());
     window.postMessage({ __dtAudio: true, user: entry.userId, name: idName.get(entry.userId) || null, ch: currentChannel(), t, pcm }, location.origin, [pcm]);
     H.chunks++;
@@ -286,7 +294,7 @@
   async function readTrack(track, userId) {
     if (readers.has(track.id)) { if (userId) readers.get(track.id).userId = userId; return; }
     const c = audioCtx();
-    const entry = { userId };
+    const entry = { userId, trackId: track.id };
     readers.set(track.id, entry);
     H.tracks++;
     const stream = new MediaStream([track]);
@@ -391,7 +399,7 @@
       activeTracks: [...readers.values()].filter((r) => r.isActive?.()).length,
       silent: H.silent || 0, loudMax: +(H.loudMax || 0).toFixed(3), ctxRate: ctx?.sampleRate, ctxBase: ctx ? +(ctx.baseLatency || 0).toFixed(3) : null, frames: H.frames || 0, chunks: H.chunks,
       ctx: ctx ? ctx.state : 'none', enabled, live: H.live, liveIds: inChannelIds() ?? [...new Set([...readers.values()].map((r) => r.userId).filter(Boolean))], names: H.names, nameVia: H.nameVia,
-      badStreamIds: H.badStreamIds, errors: [...new Set(H.errors)].slice(-5),
+      badStreamIds: H.badStreamIds, dupDropped: H.dupDropped || 0, errors: [...new Set(H.errors)].slice(-5),
       storeDiag: H.storeDiag, unnamedRows: H.unnamedRows, channel: currentChannel(), me: meInfo(),
       unnamedLive: [...readers.values()].filter((r) => r.userId && !idName.has(r.userId)).map((r) => r.userId),
     } }, location.origin);
