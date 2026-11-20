@@ -519,11 +519,11 @@ ENGINE_DEFAULTS = {
 # word error rate % and speed (x real time) on the machines we tested.
 MODELS = [
     {"id": "granite-470m", "name": "Granite Speech 5.0 · 470M", "default": True,
-     "about": "Best all-rounder: most accurate per watt, very fast, light.", "langs": "English + 6 more",
+     "about": "Best all-rounder: near-top accuracy, very fast, light. English + 6 languages.", "langs": "English + 6 more",
      "repos": {"mlx": "ibm-granite/granite-speech-5.0-470m-turboctc", "torch": "ibm-granite/granite-speech-5.0-470m-turboctc"},
      "bench": {"mlx": {"wer": 5.5, "speed": 249, "mem": 1.6}, "torch": {"wer": 5.5, "speed": 82, "mem": 0.9}}},
     {"id": "granite-2b", "name": "Granite Speech 5.0 · 2B",
-     "about": "Most accurate we measured, ~4x more memory and much slower.", "langs": "English + 6 more",
+     "about": "Most accurate we measured; ~5x the memory and much slower. English + 6 languages.", "langs": "English + 6 more",
      "repos": {"mlx": "ibm-granite/granite-speech-5.0-2b", "torch": "ibm-granite/granite-speech-5.0-2b"},
      "bench": {"mlx": {"wer": 5.4, "speed": 13, "mem": 9.1}, "torch": {"wer": 5.4, "speed": 11}}},
     {"id": "parakeet-v3", "name": "Parakeet TDT 0.6B v3",

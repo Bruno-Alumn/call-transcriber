@@ -676,7 +676,7 @@ function popHtml(which) {
       const cur = m.id === st.modelId, loading = st.modelLoading === m.id;
       const k = m.stats ? `${m.stats.wer}% words wrong · ${m.stats.speed}× real time${m.stats.mem ? ' · ' + m.stats.mem + ' GB' : ''}` : 'not benchmarked on this kind of machine';
       return `<div class="mrow${cur ? ' on' : ''}"><span class="n">${esc(m.name)}${m.default ? ' · default' : ''}</span>
-        <span class="a">${esc(m.about)} ${esc(m.langs)}.</span><span class="k">${k} · ${runsOn[m.engine] || m.engine}</span>
+        <span class="a">${esc(m.about)}</span><span class="k">${k} · ${runsOn[m.engine] || m.engine}</span>
         <button data-model="${esc(m.id)}" ${cur || loading || st.modelLoading ? 'disabled' : ''}>${loading ? 'Loading…' : cur ? 'In use' : 'Use'}</button></div>`;
     }).join('');
     return `<h3>Speech model</h3>
@@ -689,9 +689,10 @@ function popHtml(which) {
 function openPop(which, anchor) {
   const pop = $('#pop');
   if (popFor === which) return closePop();
-  popFor = which; pop.innerHTML = popHtml(which); pop.style.display = 'block';
+  popFor = which; pop.classList.toggle('wide', which === 'model'); pop.innerHTML = popHtml(which); pop.style.display = 'block';
   const r = anchor.getBoundingClientRect();
-  pop.style.left = Math.min(r.left, innerWidth - pop.offsetWidth - 12) + 'px'; pop.style.top = (r.bottom + 8) + 'px';
+  pop.style.left = Math.max(12, Math.min(r.left, innerWidth - pop.offsetWidth - 12)) + 'px'; pop.style.top = (r.bottom + 8) + 'px';
+  pop.style.maxHeight = (innerHeight - r.bottom - 24) + 'px'; pop.style.overflowY = 'auto';
   wirePop();
 }
 let modelsInfo = null;
@@ -725,7 +726,7 @@ function renderBanner() {
   const b = $('#banner');
   const applied = upd?.applied;
   if (applied?.ok) {
-    b.innerHTML = `<span>✓ Updated to <b>v${esc(applied.version)}</b>.</span><span class="notes">${applied.extension ? 'The Chrome extension reloaded itself. ' : ''}${inApp ? 'Restart the app to finish.' : 'Restart the app (or the server) to finish.'}</span>
+    b.innerHTML = `<span>✓ Updated to <b>v${esc(applied.version)}</b>.</span><span class="notes">${applied.extension && liveState?.ext?.connected ? 'The Chrome extension reloaded itself. ' : applied.extension ? 'Reload the Chrome extension in chrome://extensions. ' : ''}${inApp ? 'Restart the app to finish.' : 'Restart the app (or the server) to finish.'}</span>
       ${inApp ? '<button id="b-restart">Restart now</button>' : ''}`;
     b.style.display = 'flex';
     $('#b-restart') && ($('#b-restart').onclick = () => { $('#b-restart').textContent = 'Restarting…'; appRelaunch(applied); });
