@@ -39,6 +39,10 @@ transcript. No Chrome or extension needed.
 - **Discord window:** the real Discord web app (your account). Closing it
   hides it and keeps you in the call; the **Discord** button or ⌘D / Ctrl+D
   brings it back. Discord ▸ Pause Transcribing pauses.
+- **Screen share** from the built-in Discord (Share Your Screen / Go Live) opens a
+  picker: a clean **compact view** of the transcriber made for sharing (live
+  transcript and stats, no private controls), the dashboard itself, a screen or
+  any window. Discord ▸ Open Shared View opens that compact window by itself.
 - **Compact mode** (the layout button left of the call name, or ⌘⇧K / Ctrl+Shift+K):
   live transcript plus every analytics panel on one screen, no scrolling.
 - Closing the dashboard keeps transcribing; Quit (⌘Q, or the Windows tray

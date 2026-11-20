@@ -284,14 +284,92 @@ function setupDiscordSession() {
   const allowed = new Set(['media', 'notifications', 'clipboard-sanitized-write', 'clipboard-read', 'fullscreen', 'speaker-selection', 'display-capture']);
   ses.setPermissionRequestHandler((_wc, perm, cb, details) => cb(allowed.has(perm) && isDiscordUrl(details.requestingUrl || '')));
   ses.setPermissionCheckHandler((_wc, perm, origin) => allowed.has(perm) && isDiscordUrl(origin || ''));
-  ses.setDisplayMediaRequestHandler(async (_req, cb) => {   // screen share: the main screen
-    try {
-      const [src] = await desktopCapturer.getSources({ types: ['screen'] });
-      cb(src ? { video: src, ...(IS_WIN ? { audio: 'loopback' } : {}) } : {});
-    } catch { cb({}); }
+  // Screen share ("Share Your Screen" / Go Live): our own picker, which also
+  // offers the transcriber itself — a clean compact view made for sharing.
+  ses.setDisplayMediaRequestHandler(async (_req, cb) => {
+    try { cb((await pickShareSource()) || {}); } catch { cb({}); }
   });
   return ses;
 }
+
+// ----------------------------------------------------------------- screen share
+let shareWin = null, picker = null, pickerSources = new Map(), pickerDone = null;
+
+function openShareView() {
+  return new Promise((resolve) => {
+    if (shareWin && !shareWin.isDestroyed()) { shareWin.showInactive(); resolve(shareWin); return; }
+    shareWin = new BrowserWindow({
+      width: 1280, height: 720, minWidth: 800, minHeight: 450, title: 'Call Transcriber — shared view',
+      backgroundColor: windowBg(), icon: icon(), autoHideMenuBar: true, show: false,
+      webPreferences: { contextIsolation: true, sandbox: true, backgroundThrottling: false },
+    });
+    shareWin.webContents.on('will-navigate', (e) => e.preventDefault());
+    shareWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    shareWin.on('closed', () => { shareWin = null; });
+    shareWin.webContents.once('did-finish-load', () => { shareWin.showInactive(); setTimeout(() => resolve(shareWin), 400); });
+    shareWin.loadURL(BASE + '?view=share').catch(() => resolve(shareWin));
+  });
+}
+
+async function sourceFor(id) {
+  if (id === 'app:share') { const w = await openShareView(); return { video: w.webContents.mainFrame }; }
+  if (id === 'app:dash') { if (!dash || dash.isDestroyed()) return null; return { video: dash.webContents.mainFrame }; }
+  const src = pickerSources.get(id);
+  if (!src) return null;
+  return { video: src, ...(IS_WIN && id.startsWith('screen:') ? { audio: 'loopback' } : {}) };
+}
+
+function pickShareSource() {
+  if (TEST && process.env.CT_SHARE_PICK) return sourceFor(process.env.CT_SHARE_PICK);   // harness: no dialog
+  if (picker && !picker.isDestroyed()) { picker.focus(); return Promise.resolve(null); }
+  return new Promise((resolve) => {
+    picker = new BrowserWindow({
+      width: 760, height: 560, minWidth: 520, minHeight: 380, title: 'Share in Discord', parent: discord || undefined, modal: IS_MAC,
+      backgroundColor: windowBg(), autoHideMenuBar: true, show: false,
+      webPreferences: { preload: path.join(__dirname, 'picker-preload.js'), contextIsolation: true, sandbox: true },
+    });
+    picker.webContents.on('will-navigate', (e) => e.preventDefault());
+    picker.once('ready-to-show', () => picker.show());
+    pickerDone = async (id) => {
+      pickerDone = null;
+      const w = picker; picker = null;
+      if (w && !w.isDestroyed()) w.destroy();
+      resolve(id ? await sourceFor(id).catch(() => null) : null);
+    };
+    picker.on('closed', () => { if (pickerDone) pickerDone(null); });
+    picker.loadFile(path.join(__dirname, 'picker.html'));
+  });
+}
+
+const fromPicker = (e) => picker && !picker.isDestroyed() && e.sender === picker.webContents;
+ipcMain.handle('ct:picker-sources', async (e) => {
+  if (!fromPicker(e)) return null;
+  const app_ = [
+    { id: 'app:share', name: 'Transcriber — compact view', note: 'A clean 1280×720 window made for sharing: live transcript and stats', placeholder: 'Compact view' },
+    { id: 'app:dash', name: 'Transcriber — dashboard', note: 'Exactly what your dashboard shows', placeholder: 'Dashboard' },
+  ];
+  // live previews of our own views
+  try {
+    const img = dash && !dash.isDestroyed() ? await dash.webContents.capturePage() : null;
+    if (img && !img.isEmpty()) app_[1].thumb = img.resize({ width: 320 }).toDataURL();
+    const simg = shareWin && !shareWin.isDestroyed() ? await shareWin.webContents.capturePage() : img;
+    if (simg && !simg.isEmpty()) app_[0].thumb = simg.resize({ width: 320 }).toDataURL();
+  } catch {}
+  let screens = [], windows = [], note = '';
+  try {
+    const all = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 320, height: 180 }, fetchWindowIcons: false });
+    pickerSources = new Map(all.map((x) => [x.id, x]));
+    const own = new Set([picker?.getMediaSourceId?.(), dash?.getMediaSourceId?.(), discord?.getMediaSourceId?.(), shareWin?.getMediaSourceId?.()].filter(Boolean));
+    const item = (x) => ({ id: x.id, name: x.name, thumb: x.thumbnail.isEmpty() ? null : x.thumbnail.toDataURL() });
+    screens = all.filter((x) => x.id.startsWith('screen:')).map((x, i) => ({ ...item(x), name: all.filter((y) => y.id.startsWith('screen:')).length > 1 ? `Screen ${i + 1}` : 'Entire screen' }));
+    windows = all.filter((x) => x.id.startsWith('window:') && !own.has(x.id) && x.name).map(item);
+  } catch {}
+  if (IS_MAC && systemPreferences.getMediaAccessStatus('screen') !== 'granted') {
+    note = 'To share a screen or another app, allow Call Transcriber in System Settings › Privacy & Security › Screen & System Audio Recording, then reopen it. The two Call Transcriber views work without that.';
+  }
+  return { app: app_, screens, windows, note };
+});
+ipcMain.on('ct:picker-choose', (e, id) => { if (fromPicker(e) && pickerDone) pickerDone(id); });
 
 function createDiscord() {
   discord = new BrowserWindow({
@@ -369,6 +447,7 @@ function buildMenu() {
   t.push({ label: 'Discord', submenu: [
     { label: 'Show Discord', accelerator: 'CmdOrCtrl+D', click: showDiscord },
     { label: 'Show Dashboard', accelerator: 'CmdOrCtrl+1', click: showMain },
+    { label: 'Open Shared View (for screen sharing)', click: () => openShareView() },
     { type: 'separator' },
     { label: 'Mute Call Audio (keeps transcribing)', type: 'checkbox', checked: muted, accelerator: 'CmdOrCtrl+Shift+M', click: (i) => setMuted(i.checked) },
     { label: 'Pause Transcribing', type: 'checkbox', checked: paused, click: (i) => setPaused(i.checked) },

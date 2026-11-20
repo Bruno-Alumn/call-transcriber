@@ -30,7 +30,7 @@ const fail = (msg) => { console.log('FAIL', msg); process.exitCode = 1; };
     executablePath: exe, args: [DESKTOP],
     env: { ...process.env, CT_TEST: '1', CT_PORT: String(PORT), CT_DISCORD_URL: 'http://localhost:8899/',
       CT_SERVER_ARGS: `--out ${OUT} ${process.env.SERVER_ARGS || ''}`, CT_USER_DATA: path.join(SCRATCH, 'userdata'),
-      CT_SHOW: process.env.SHOW || '0' },
+      CT_SHOW: process.env.SHOW || '0', CT_SHARE_PICK: 'app:share' },
   });
   const logs = [];
   app.process().stdout.on('data', (d) => logs.push(String(d)));
@@ -79,6 +79,22 @@ const fail = (msg) => { console.log('FAIL', msg); process.exitCode = 1; };
   console.log('SERVER EXT', JSON.stringify(state.ext));
   if (!state.ext.connected || state.ext.client !== 'app') fail('server does not see the app as connected');
   await sleep(Math.max(0, 32000 - (Date.now() - t0)));
+  // Screen share: Discord asks for a screen; the app hands it the shared compact view.
+  await discord.click('#share');
+  await sleep(4000);
+  const share1 = await discord.evaluate(() => window.__share);
+  await sleep(2000);
+  const share2 = await discord.evaluate(() => window.__share);
+  console.log('SCREEN SHARE', JSON.stringify(share2), 'frames in 2s:', (share2?.frames || 0) - (share1?.frames || 0));
+  if (share2?.status !== 'sharing' || !(share2.w > 0)) fail('screen share of the compact view did not start');
+  const shareView = app.windows().find((w) => w.url().includes('view=share'));
+  if (!shareView) fail('shared view window missing');
+  else {
+    await shareView.screenshot({ path: path.join(SCRATCH, 'app-share-view.png') });
+    const hidden = await shareView.evaluate(() => ['#export', '.c-res', '.pills'].map((q) => { const e = document.querySelector(q); return e ? getComputedStyle(e).display : 'none'; }).concat(getComputedStyle(document.querySelector('.side')).visibility === 'hidden' ? 'none' : 'shown', document.querySelector('.app').getBoundingClientRect().width > innerWidth * 0.9 ? 'none' : 'layout-broken'));
+    console.log('SHARED VIEW hides private controls:', hidden.every((d) => d === 'none'), 'page scroll:', await shareView.evaluate(() => document.documentElement.scrollHeight - innerHeight));
+    if (!hidden.every((d) => d === 'none')) fail('shared view shows private controls');
+  }
   const hook = await discord.evaluate(() => ({ capture: window.__dtHook.capture, tracks: window.__dtHook.tracks, chunks: window.__dtHook.chunks, errors: window.__dtHook.errors, names: window.__dtHook.names }));
   console.log('PAGE', JSON.stringify(hook));
   if (dash) {

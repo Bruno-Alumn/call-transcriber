@@ -18,6 +18,7 @@
   </div>
 </div>
 <button id="join">Join voice</button>
+<button id="share">Share screen</button><video id="sharevid" muted autoplay playsinline width="320"></video>
 <script>
 // ?nowl=1: make AudioWorklet unavailable to force the old ScriptProcessor capture.
 if (location.search.includes('nowl=1')) AudioWorklet.prototype.addModule = () => Promise.reject(new Error('disabled for test'));
@@ -63,6 +64,17 @@ document.getElementById('row-carol')['__reactFiber$test'] = deep;
 // ?busy=1: keep the main thread ~75% busy, like a heavy Discord page.
 if (location.search.includes('busy=1')) setInterval(() => { const end = performance.now() + 150; while (performance.now() < end); }, 200);
 window.__harness = { status: 'waiting for click' };
+// "Share Your Screen", like Discord's Go Live: getDisplayMedia, then count frames we receive.
+document.getElementById('share').onclick = async () => {
+  window.__share = { status: 'asking' };
+  try {
+    const st = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+    const v = document.getElementById('sharevid'); v.srcObject = st; await v.play().catch(() => {});
+    window.__share = { status: 'sharing', frames: 0, label: st.getVideoTracks()[0]?.label };
+    const tick = () => { window.__share.frames++; window.__share.w = v.videoWidth; window.__share.h = v.videoHeight; v.requestVideoFrameCallback(tick); };
+    v.requestVideoFrameCallback(tick);
+  } catch (e) { window.__share = { status: 'error', error: String(e) }; }
+};
 document.getElementById('join').onclick = () => (async () => {
   const ctx = new AudioContext({ sampleRate: 48000 });
   await ctx.resume();
