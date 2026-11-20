@@ -62,6 +62,8 @@ async function scenario(name, listenerQuery) {
 
   await main.click('#join'); await listener.click('#join');
   await sleep(15000);
+  const hk = async (w) => w.evaluate(() => ({ listener: !!window.__ctListener, en: window.__dtHook?.enabled, capture: window.__dtHook?.capture, tracks: window.__dtHook?.tracks, frames: window.__dtHook?.frames, chunks: window.__dtHook?.chunks, errors: window.__dtHook?.errors, harness: window.__harness?.status }));
+  console.log('HOOK main', JSON.stringify(await hk(main)), '| listener', JSON.stringify(await hk(listener)));
   const st = await get('/api/state');
   console.log('ACCOUNTS', JSON.stringify((st?.accounts || []).map((a) => ({ role: a.role, ch: a.channel?.name, capturing: a.capturing, present: a.present.length }))), 'own', JSON.stringify(st?.own));
   await sleep(20000);

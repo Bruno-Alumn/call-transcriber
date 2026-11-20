@@ -20,3 +20,4 @@ events/
 # abandoned bot-account approach, kept locally only
 bot/
 server-test-*.log
+judge/
