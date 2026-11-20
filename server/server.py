@@ -1021,9 +1021,14 @@ def pick_engine(requested: str) -> str:
 # One utterance can hold several sentences while someone else replies in
 # between. Split it at sentence ends and pauses, and put each part at the time
 # it was actually said, so the transcript interleaves who said what when.
-def english_mask(tokenizer, size: int):
-    """Tokens a CTC model may emit when the call is in English: only ones made of
-    plain ASCII, so it can't drift into another language's words or script."""
+ENGLISH_SYMBOLS = set("£€°’‘“”—–…")              # non-ASCII that English text still uses
+
+
+def english_mask(tokenizer, size: int, symbols: bool = False):
+    """Tokens a model may emit when the call is in English: only ones made of
+    plain ASCII, so it can't drift into another language's words or script.
+    symbols=True also allows tokens that decode to ASCII plus ENGLISH_SYMBOLS
+    (currency, degrees, curly quotes, dashes), for the 2B that writes them."""
     ok = np.zeros(size, dtype=bool)
     markers = str.maketrans("", "", "\u2581\u0120\u010a")      # SentencePiece / byte-BPE space and newline marks
     name = getattr(tokenizer, "convert_ids_to_tokens", None) or getattr(tokenizer, "id_to_token")
@@ -1036,7 +1041,32 @@ def english_mask(tokenizer, size: int):
             continue
         t = str(t).translate(markers)
         ok[i] = all(ord(c) < 128 for c in t)
+        if symbols and not ok[i]:
+            # byte-level BPE names these by their bytes ("Â£"): look at the decoded text
+            # (a piece of a multi-byte character decodes to U+FFFD and stays forbidden)
+            try:
+                d = tokenizer.decode([i])
+            except Exception:
+                continue
+            # (only tokens with a symbol in them: not tabs and control bytes, which the byte names forbid)
+            ok[i] = any(c in ENGLISH_SYMBOLS for c in d) and all(32 <= ord(c) < 127 or c in ENGLISH_SYMBOLS for c in d)
     return ok
+
+
+def en_token_cap(audio_len: int) -> int:
+    """Most tokens the 2B may write, English only, for this much audio. English
+    speech is under 5 tokens a second (AMI meetings: at most 4.9); with the mask
+    on, speech in another script can make the model repeat itself until it runs
+    out of tokens (a minute on a 10 s clip), so stop well before that."""
+    return int(10 * audio_len / SR) + 20
+
+
+def looping(ids) -> bool:
+    """True when the output ends in the same 1-4 tokens 8 times over ("3 3 3 ...")."""
+    for p in range(1, 5):
+        if len(ids) >= 8 * p and all(ids[-k] == ids[-k - p] for k in range(1, 7 * p + 1)):
+            return True
+    return False
 
 
 def ctc_pieces(ids, audio_len: int, decode, blank: int) -> list[tuple[str, float, float]]:
@@ -1149,6 +1179,8 @@ def load_engine(engine: str, repo: str, language: str | None):
             # tokens which aren't plain ASCII: no other scripts or accented
             # letters (Latin-script words of another language can still slip
             # through, just without accents). Same prompt as generate().
+            # When the speech isn't English the mask can make it repeat itself
+            # instead of ending: such output is dropped (returns ""), see en_token_cap.
             from mlx_audio.lm.generate import generate_step
             gs = sys.modules[type(model).__module__]
             tok = model._tokenizer
@@ -1158,7 +1190,7 @@ def load_engine(engine: str, repo: str, language: str | None):
             def only_english(tokens, logits):
                 nonlocal mask
                 if mask is None:
-                    m = english_mask(tok, logits.shape[-1])
+                    m = english_mask(tok, logits.shape[-1], symbols=True)
                     for i in [tok.eos_token_id, *getattr(tok, "all_special_ids", [])]:
                         if i is not None and i < len(m):
                             m[i] = True
@@ -1169,13 +1201,16 @@ def load_engine(engine: str, repo: str, language: str | None):
                 audio_feats = model.get_audio_features(feats)
                 ids = model._build_prompt(n_audio, ask, system_prompt=system)
                 embeds = model._build_inputs_embeds(ids, audio_feats)
-                out = []
+                out, ended = [], False
                 for t, _ in generate_step(prompt=ids, input_embeddings=embeds.squeeze(0), model=model,
-                                          max_tokens=4096, logits_processors=[only_english]):
+                                          max_tokens=en_token_cap(len(audio)), logits_processors=[only_english]):
                     if t == tok.eos_token_id:
+                        ended = True
                         break
-                    out.append(t)
-                return tok.decode(out, skip_special_tokens=True)
+                    out.append(int(t))
+                    if looping(out):
+                        break
+                return tok.decode(out, skip_special_tokens=True) if ended else ""
             return run_en
         def run(audio):
             out = model.generate(mx.array(audio), **kw)
@@ -1224,7 +1259,7 @@ def load_engine(engine: str, repo: str, language: str | None):
                     bad = None
                     def __call__(self, input_ids, scores):
                         if self.bad is None:
-                            m = english_mask(tok, scores.shape[-1])
+                            m = english_mask(tok, scores.shape[-1], symbols=True)
                             for i in [tok.eos_token_id, *tok.all_special_ids]:
                                 if i is not None and i < len(m):
                                     m[i] = True
@@ -1234,8 +1269,13 @@ def load_engine(engine: str, repo: str, language: str | None):
             def run(audio):
                 with torch.inference_mode():
                     inp = proc(prompt, torch.from_numpy(audio).unsqueeze(0), device=dev, return_tensors="pt").to(dev)
-                    out = model.generate(**inp, max_new_tokens=200, do_sample=False, num_beams=1, **gen)
-                    return tok.batch_decode(out[:, inp["input_ids"].shape[-1]:], skip_special_tokens=True)[0]
+                    cap = min(200, en_token_cap(len(audio))) if gen else 200
+                    out = model.generate(**inp, max_new_tokens=cap, do_sample=False, num_beams=1, **gen)
+                    new = out[0, inp["input_ids"].shape[-1]:].tolist()
+                    if gen and (looping([t for t in new if t != tok.pad_token_id]) or
+                                (tok.eos_token_id not in new and len(new) >= cap)):
+                        return ""                    # English only, but it looped: not English speech
+                    return tok.decode(new, skip_special_tokens=True)
             return run
         if "qwen3-asr" in low:                               # Qwen3-ASR (52 languages)
             from transformers import AutoModelForMultimodalLM
@@ -1265,7 +1305,7 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
     import gc
     current, model_run = None, None
     refine_cur, refine_run = None, None
-    refine_lang = None                   # the language the rewrite model was loaded for (2B is English-only on "en")
+    refine_lang = None                   # the language the rewrite model was loaded for (2B is English-only on "en", else the same)
     loader: dict = {}                    # background load of the rewrite model
     def free_memory(engine):
         gc.collect()
@@ -1280,7 +1320,7 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
         lang = current_settings()["language"] if not language_forced else language
         want = (*hub.want, lang)                          # (id, engine, repo, language)
         if want != current and refine_cur and want[:3] == refine_cur and refine_run \
-                and refine_lang == (None if lang == "auto" else lang):
+                and (refine_lang == "en") == (lang == "en"):
             # Both -> 2B only: the rewrite model is already loaded; make it the live one.
             model_run, refine_run, refine_cur, hub.refine_id = refine_run, None, None, None
             hub.refine_q.clear()
@@ -1292,8 +1332,9 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
         if want != current:
             mid, engine, repo, lang = want
             language = None if lang == "auto" else lang
-            if refine_run is not None and (hub.want_refine is None or refine_lang != language):
-                # free the rewrite model first (also when the language changed: it reloads for the new one)
+            if refine_run is not None and (hub.want_refine is None or (refine_lang == "en") != (language == "en")):
+                # free the rewrite model first (also when English only was turned on or off:
+                # it reloads for that; 2B is the same for every other language)
                 refine_run, refine_cur, hub.refine_id = None, None, None
                 hub.refine_q.clear()
                 free_memory(engine)
@@ -1355,8 +1396,8 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
                     print("rewrite model failed:", loader["error"], flush=True)
                     hub.model_error = loader["error"]
                     hub.want_refine = None
-                elif loader.get("run") is not None and loader.get("lang") != language:
-                    loader.clear()                                         # language changed while loading: load again
+                elif loader.get("run") is not None and (loader.get("lang") == "en") != (language == "en"):
+                    loader.clear()                                         # English only changed while loading: load again
                 else:
                     try:
                         run = loader["run"] or load_engine(target[1], target[2], language)
