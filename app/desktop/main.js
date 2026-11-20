@@ -336,6 +336,7 @@ ipcMain.handle('ct:accounts', (e) => {
   return { accounts: accounts.map(accountSummary),
     guilds: [...guilds.values()].map((g) => ({ ...g, channels: [...g.channels.values()] })).sort((x, y) => x.name.localeCompare(y.name)) };
 });
+ipcMain.on('ct:open-plugins', (e) => { if (fromDash(e)) { const d = path.join(ROOT, 'plugins'); fs.mkdirSync(d, { recursive: true }); shell.openPath(d); } });
 ipcMain.handle('ct:app-settings', (e) => (fromDash(e) ? appSettings() : null));
 ipcMain.handle('ct:set-app-setting', (e, key, value) => (fromDash(e) ? setAppSetting(String(key), !!value) : null));
 ipcMain.handle('ct:transcribe', (e, guildId, channelId) => (fromDash(e) ? transcribeChannel(String(guildId), String(channelId)) : null));

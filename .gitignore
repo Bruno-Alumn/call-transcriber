@@ -21,3 +21,7 @@ events/
 bot/
 server-test-*.log
 judge/
+
+# your own plugins stay local; the examples ship with the app
+plugins/*
+!plugins/example-*

@@ -122,19 +122,23 @@ class Writer:
 
     def __init__(self, hub: "Hub"):
         self.hub = hub
+        self.q = None                    # the utterance queue (set by main)
+        self.pending: list = []          # .md lines waiting for anything said earlier
+        self.lock = threading.Lock()
 
     def _paths(self, when):
         TRANSCRIPTS.mkdir(parents=True, exist_ok=True)
         md = TRANSCRIPTS / f"{when:%Y-%m-%d}.md"
         if not md.exists():
-            md.write_text(f"# Discord voice transcript, {when:%A %B} {when.day}, {when.year}\n\n", encoding="utf-8")
+            md.write_text(f"# Voice call transcript, {when:%A %B} {when.day}, {when.year}\n\n", encoding="utf-8")
         return md, TRANSCRIPTS / f"{when:%Y-%m-%d}.jsonl"
 
     def write(self, t_ms: float, dur_s: float, uid: str, speaker: str, text: str, ch: dict | None = None):
         when = dt.datetime.fromtimestamp(t_ms / 1000)
         md, jl = self._paths(when)
-        with md.open("a", encoding="utf-8") as f:
-            f.write(f"**[{when:%H:%M:%S}] {speaker}:** {text}\n\n")
+        with self.lock:
+            self.pending.append((t_ms, when, speaker, text, (ch or {}).get("name"), time.time()))
+        self.flush_md()
         rec = {"t": int(t_ms), "end": int(t_ms + dur_s * 1000), "user": uid, "speaker": speaker, "text": text}
         if ch and ch.get("id"):
             rec.update({"ch": ch["id"], "chName": ch.get("name"), "guild": ch.get("guild"), "guildName": ch.get("guildName")})
@@ -142,6 +146,41 @@ class Writer:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         print(f"[{when:%H:%M:%S}] {speaker}: {text}", flush=True)
         self.hub.publish({"type": "line", **rec})
+
+    def watermark(self) -> float:
+        """Clock time (ms) of the earliest speech that could still produce a line:
+        someone mid-sentence, an utterance waiting in the queue, or the one being
+        transcribed now. Everything said before it is final."""
+        marks = []
+        try:
+            marks += [p.cur[0][0] for p in list(self.hub.people.values()) if p.cur]
+        except Exception:
+            pass
+        try:
+            marks += [item[0] for item in list(self.q.queue)] if self.q else []
+        except Exception:
+            pass
+        if getattr(self.hub, "busy_t0", None) is not None:
+            marks.append(self.hub.busy_t0)
+        return min(marks) if marks else float("inf")
+
+    def flush_md(self, force: bool = False):
+        """Write .md lines in the order they were said, not the order they were
+        transcribed (a long sentence finishes after a short reply that came later)."""
+        with self.lock:
+            if not self.pending:
+                return
+            wm, now = self.watermark(), time.time()
+            self.pending.sort(key=lambda x: x[0])
+            ready = [x for x in self.pending if force or x[0] < wm or now - x[5] > 90]
+            if not ready:
+                return
+            cut = max(i for i, x in enumerate(self.pending) if x in ready) + 1
+            ready, self.pending = self.pending[:cut], self.pending[cut:]
+        for t_ms, when, speaker, text, chname, _ in ready:
+            md, _ = self._paths(when)
+            with md.open("a", encoding="utf-8") as f:
+                f.write(f"**[{when:%H:%M:%S}] {speaker}{f' · {chname}' if chname else ''}:** {text}\n\n")
 
 
 MD_LINE = re.compile(r"^\*\*\[(\d\d):(\d\d):(\d\d)\] (.+?):\*\* (.*)$")
@@ -669,6 +708,42 @@ SETTING_CHOICES = {"sensitivity": ["high", "normal", "low"],
 SENSITIVITY = {"high": 0.5, "normal": 1.0, "low": 2.0}     # x the speech threshold: high hears quieter voices
 
 
+PLUGINS_DIR = ROOT / "plugins"
+PLUGIN_TYPES = {".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+                ".json": "application/json", ".png": "image/png", ".svg": "image/svg+xml", ".webp": "image/webp", ".html": "text/html; charset=utf-8"}
+
+
+def list_plugins() -> list[dict]:
+    """Plugins: one folder each in plugins/, described by manifest.json. Off until turned on in Settings."""
+    on = set(load_settings().get("plugins") or [])
+    out = []
+    if PLUGINS_DIR.is_dir():
+        for d in sorted(PLUGINS_DIR.iterdir()):
+            mf = d / "manifest.json"
+            if not d.is_dir() or not mf.is_file() or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", d.name):
+                continue
+            try:
+                m = json.loads(mf.read_text(encoding="utf-8"))
+            except ValueError:
+                continue
+            out.append({"id": d.name, "name": str(m.get("name") or d.name)[:80], "version": str(m.get("version") or "")[:20],
+                        "description": str(m.get("description") or "")[:300], "main": str(m.get("main") or "main.js"),
+                        "style": m.get("style"), "enabled": d.name in on})
+    return out
+
+
+def plugin_file(rel: str):
+    """A file inside plugins/<id>/, or None (never outside that folder)."""
+    try:
+        p = (PLUGINS_DIR / rel).resolve()
+        p.relative_to(PLUGINS_DIR.resolve())
+    except (ValueError, OSError):
+        return None
+    if not p.is_file() or p.suffix.lower() not in PLUGIN_TYPES:
+        return None
+    return p
+
+
 def current_settings() -> dict:
     st = load_settings()
     return {k: st.get(k, v) for k, v in SETTING_DEFAULTS.items()}
@@ -1076,10 +1151,12 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
             except Exception:
                 pass
             print("Model ready.", flush=True)
+        writer.flush_md()
         try:
             item = q.get(timeout=0.5)
             t0, audio, who, uid, ch = item[:5]
             marks = item[5] if len(item) > 5 else [(0, t0)]
+            hub.busy_t0 = t0
         except queue.Empty:
             continue
         try:
@@ -1091,8 +1168,10 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
             hub.latency.append(max(0.0, time.time() - (t0 / 1000 + len(audio) / SR)))
         except Exception as e:  # keep running on one bad chunk
             print("transcribe error:", e, flush=True)
+            hub.busy_t0 = None
             continue
         if not text or tidy(text).lower() in HALLUCINATIONS:
+            hub.busy_t0 = None
             continue
         if not current_settings()["splitLines"]:
             parts = [(text, 0.0, len(audio) / SR)]
@@ -1103,6 +1182,7 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
             if part and part.lower() not in HALLUCINATIONS:
                 start = to_clock(marks, a)
                 writer.write(start, max(0.3, (to_clock(marks, b) - start) / 1000), uid, who, part, ch)
+        hub.busy_t0 = None
 
 
 # ---------------------------------------------------------------- websocket
@@ -1162,6 +1242,7 @@ async def main():
     hub.loop = asyncio.get_running_loop()
     threading.Thread(target=hub.sample_resources, daemon=True).start()
     writer = Writer(hub)
+    writer.q = q
     updater = Updater(hub)
     persona = PersonalityReader()
     threading.Thread(target=updater.loop, daemon=True).start()
@@ -1218,6 +1299,23 @@ async def main():
             hub.want = (m["id"], m["engine"], m["repo"])
             save_settings(model=m["id"])
             return respond({"ok": True, "loading": m["id"]})
+        if path == "/api/plugins":
+            return respond(list_plugins())
+        if path == "/api/plugins/enable":
+            if request.headers.get("X-CT") != "1":
+                return respond({"error": "forbidden"}, status=403)
+            pid, on = params.get("id", ""), params.get("on") == "1"
+            if pid not in {p["id"] for p in list_plugins()}:
+                return respond({"error": "no such plugin"}, status=404)
+            cur = [x for x in (load_settings().get("plugins") or []) if x != pid] + ([pid] if on else [])
+            save_settings(plugins=cur)
+            return respond({"ok": True, "enabled": cur})
+        if path.startswith("/plugins/"):
+            from urllib.parse import unquote
+            f = plugin_file(unquote(path[len("/plugins/"):]))
+            if not f:
+                return respond({"error": "not found"}, status=404)
+            return respond(f.read_bytes(), PLUGIN_TYPES[f.suffix.lower()])
         if path == "/api/settings":
             if request.headers.get("X-CT") == "1" and params.get("key"):
                 from urllib.parse import unquote
@@ -1406,6 +1504,7 @@ async def main():
     async with websockets.serve(handle, "127.0.0.1", args.port, max_size=2**22, process_request=http):
         print(f"Dashboard: http://127.0.0.1:{args.port}/  ·  transcripts → {TRANSCRIPTS}", flush=True)
         await stop.wait()
+    writer.flush_md(force=True)                   # write any lines still waiting for earlier speech
     print("Server stopped.", flush=True)
 
 

@@ -45,6 +45,7 @@ dashboard next to the call, and no audio ever leaves your machine.
 - Talk time, activity over time, a 10-minute timeline, crosstalk and most-said words.
 - Past calls grouped by server and channel, with search across all of them.
 - Compact mode puts the transcript and every panel on one screen, no scrolling.
+- Arrange it your way: drag panels between columns, size or hide them, and add new ones from plugins.
 - Personality reads: a light-hearted sketch of anyone in the call, written by a small local model.
 
 **Several accounts, several calls**
@@ -95,6 +96,7 @@ With an NVIDIA graphics card the PC uses it for the most accurate model; without
 | <kbd>⌘</kbd><kbd>⇧</kbd><kbd>K</kbd> | Switches compact mode on and off |
 | <kbd>⌘</kbd><kbd>⇧</kbd><kbd>M</kbd> | Turns the call's sound off for you, while it keeps being transcribed |
 | <kbd>⌘</kbd><kbd>⇧</kbd><kbd>F</kbd> | Searches every call |
+| Layout button in the header | Customize: drag, size and hide panels, and change the columns |
 | <kbd>⌘</kbd><kbd>,</kbd> | Opens Settings: start at login, sentence splitting, speech detection, language, personality reads, updates |
 | **Read** next to a name in Talk time | Writes a personality read of that person |
 
@@ -184,6 +186,18 @@ using the model's own word timing, and writes `transcripts/*.md` and `*.jsonl`.
 
 The server picks the engine for your machine: MLX on Apple Silicon, CUDA with
 an NVIDIA GPU, otherwise ONNX Runtime on the CPU.
+</details>
+
+<details>
+<summary><strong>Plugins</strong></summary>
+<br>
+
+A plugin is a folder in `plugins/` with a `manifest.json` and a JavaScript
+module. It can add panels, mark up transcript lines, add header buttons and
+react to new lines as they arrive. Turn plugins on in **Settings › Plugins**.
+[PLUGINS.md](PLUGINS.md) documents the API, and `plugins/example-questions`
+is a working example. Plugins can read your transcripts, so only turn on
+ones you trust.
 </details>
 
 <details>

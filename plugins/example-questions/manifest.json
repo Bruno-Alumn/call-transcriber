@@ -1,0 +1,7 @@
+{
+  "name": "Questions (example)",
+  "version": "1.0.0",
+  "description": "A Questions panel: every question asked in the call, who asked it and who answered. Marks questions in the transcript.",
+  "main": "main.js",
+  "style": "style.css"
+}

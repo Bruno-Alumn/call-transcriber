@@ -1,0 +1,5 @@
+.q-list { display: flex; flex-direction: column; gap: 6px; }
+.q-item { border-bottom: 1px solid var(--grid); padding: 2px 0 6px; }
+.q-item .q-who { font-weight: 600; }
+.q-item .q-ans { color: var(--text-muted); font-size: 11.5px; margin-top: 2px; }
+.q-mark { font-size: 10.5px; font-weight: 600; color: var(--accent); border: 1px solid currentColor; border-radius: 3px; padding: 0 4px; }

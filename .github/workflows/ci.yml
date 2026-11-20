@@ -48,6 +48,9 @@ jobs:
       - name: End-to-end test (3 overlapping speakers, names, channel)
         working-directory: server
         run: uv run python ../test/server_e2e.py --engine onnx
+      - name: Transcript order test (spoken order, not transcription order)
+        working-directory: server
+        run: uv run python ../test/order_test.py
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - name: Install desktop app + test tools

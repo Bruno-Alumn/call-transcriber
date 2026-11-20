@@ -1,0 +1,2 @@
+# Study outputs hold personal data (per-person scores, labels): never commit them.
+out/
