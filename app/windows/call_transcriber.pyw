@@ -26,6 +26,7 @@ def main():
                                              "Call Transcriber", 0x10)
             return
         subprocess.run([npm, "ci", "--no-audit", "--no-fund"], cwd=DESKTOP, creationflags=NO_WINDOW)
+        subprocess.run(["node", "node_modules/electron/install.js"], cwd=DESKTOP, creationflags=NO_WINDOW)
     subprocess.Popen([str(ELECTRON), str(DESKTOP)], cwd=ROOT, creationflags=0x00000008 | 0x00000200)  # detached
     if os.environ.get("CT_FIX_SHORTCUTS", "1") == "1":
         fix_shortcuts()

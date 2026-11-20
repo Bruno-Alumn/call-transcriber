@@ -331,7 +331,7 @@ async function relaunchAfterUpdate({ rebuild = false, deps = false, app: appDeps
     // electron.exe can't be replaced while it runs: refresh it after we exit, then start again.
     const exe = path.join(desktopDir, 'node_modules', 'electron', 'dist', 'electron.exe');
     const script = path.join(app.getPath('temp'), 'ct-update.cmd');
-    fs.writeFileSync(script, `@echo off\r\nping -n 3 127.0.0.1 >nul\r\ncd /d "${desktopDir}"\r\ncall npm ci --no-audit --no-fund\r\nstart "" "${exe}" "${desktopDir}"\r\n`);
+    fs.writeFileSync(script, `@echo off\r\nping -n 3 127.0.0.1 >nul\r\ncd /d "${desktopDir}"\r\ncall npm ci --no-audit --no-fund\r\nnode node_modules\\electron\\install.js\r\nstart "" "${exe}" "${desktopDir}"\r\n`);
     spawn('cmd.exe', ['/c', script], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
   } else {
     app.relaunch();

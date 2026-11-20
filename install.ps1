@@ -83,6 +83,7 @@ Push-Location $Desk
 try {
     $ErrorActionPreference = 'Continue'
     npm ci --no-audit --no-fund --loglevel=error
+    node node_modules\electron\install.js   # (Electron fetches its binary on demand)
     $ErrorActionPreference = 'Stop'
     if (-not (Test-Path $Exe)) { throw 'Installing the app failed (see the messages above).' }
 } finally { Pop-Location }

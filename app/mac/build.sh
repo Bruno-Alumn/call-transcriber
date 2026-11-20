@@ -16,7 +16,7 @@ want=$(node -p "require('$DESKTOP/package.json').devDependencies.electron")
 have=$(cat "$DESKTOP/node_modules/electron/dist/version" 2>/dev/null || true)
 if [[ "$have" != "$want" ]]; then
   echo "Installing Electron $want…"
-  (cd "$DESKTOP" && npm ci --no-audit --no-fund --loglevel=error)
+  (cd "$DESKTOP" && npm ci --no-audit --no-fund --loglevel=error && node node_modules/electron/install.js)
 fi
 
 # 2. Bundle
