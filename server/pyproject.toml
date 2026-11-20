@@ -11,6 +11,9 @@ dependencies = [
     "mlx-whisper>=0.4; sys_platform == 'darwin'",
     "onnx-asr[cpu,hub]>=0.12; sys_platform != 'darwin'",
     "numpy>=2.5.5",
+    # Voice activity detection (Silero VAD, a 2 MB ONNX model) on every platform
+    "onnxruntime>=1.20",
+    "huggingface-hub>=0.30",     # model downloads (also pulled in by the speech engines)
     "psutil>=6",
     # Windows app window + tray icon
     "pywebview>=5; sys_platform == 'win32'",

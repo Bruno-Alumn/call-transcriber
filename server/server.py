@@ -56,13 +56,100 @@ def tidy(text: str) -> str:
     return t
 
 
+# ---------------------------------------------------------------- voice detection
+# Loudness alone can't tell a voice from keyboard clicks, a fan, breathing or
+# music, and every noise burst that starts an utterance comes back as a junk
+# line ("I.", "Oh."). Silero VAD (v5: a 2 MB ONNX model, CPU, ONNX Runtime)
+# scores each 32 ms of audio with a speech probability. The model is
+# recurrent, so each person has their own VadStream (state + leftover
+# samples); the model itself is loaded once, in the background at startup,
+# and shared. Until it is ready, or if it can't be loaded, Segmenter falls
+# back to the loudness gate alone.
+VAD_REPO, VAD_FILE = "onnx-community/silero-vad", "onnx/model.onnx"
+VAD_WINDOW, VAD_CONTEXT = 512, 64   # samples per score (32 ms at 16 kHz); samples of the previous window in front
+# Loudness bars, as multiples of the speech threshold (which sensitivity sets).
+# The VAD tells speech from noise, not this person from a quiet voice in their
+# room (TV, a roommate, other people leaking back through their speakers), so
+# an utterance still has to start as loud as the threshold; once it is going,
+# quieter audio may continue it (soft words, trailing off), but only down to
+# VAD_REL of the utterance's own level.
+VAD_START = 1.0                     # x threshold: an utterance starts only above this (and with speech)
+VAD_FLOOR = 0.25                    # x threshold: below this nothing continues an utterance
+VAD_WARM = 0.5                      # x threshold: between utterances, quieter than this isn't scored
+VAD_REL = 0.15                      # x the utterance's level (-16 dB): quieter audio doesn't continue it
+VAD_MIN_VOICED_MS = 160             # an utterance needs this much speech-scored audio to be transcribed (see flush)
+
+
+class Vad:
+    model = None                    # the shared scoring function once loaded
+    state = "off"                   # off -> loading -> ready | failed
+
+    @classmethod
+    def load(cls):
+        cls.state = "loading"
+        try:
+            import onnxruntime as ort
+            from huggingface_hub import hf_hub_download
+            try:
+                path = hf_hub_download(VAD_REPO, VAD_FILE, local_files_only=True)   # cached: no network
+            except Exception:
+                path = hf_hub_download(VAD_REPO, VAD_FILE)
+            opts = ort.SessionOptions()
+            # One thread: a 32 ms window is tiny, and threads would cost more than the math.
+            opts.intra_op_num_threads = opts.inter_op_num_threads = 1
+            sess = ort.InferenceSession(path, sess_options=opts, providers=["CPUExecutionProvider"])
+            sr = np.array(SR, dtype=np.int64)
+
+            def score(x, state):
+                out, state = sess.run(None, {"input": x[None, :], "state": state, "sr": sr})
+                return float(out[0, 0]), state
+            score(np.zeros(VAD_CONTEXT + VAD_WINDOW, np.float32), np.zeros((2, 1, 128), np.float32))
+            cls.model, cls.state = score, "ready"
+            print("  Speech detection: Silero VAD ready", flush=True)
+        except Exception as e:
+            cls.state = "failed"
+            print(f"  Speech detection: Silero VAD unavailable ({type(e).__name__}: {e}); using loudness only", flush=True)
+
+    @classmethod
+    def load_async(cls):
+        if cls.state == "off":
+            cls.state = "loading"
+            threading.Thread(target=cls.load, daemon=True, name="vad-load").start()
+
+
+class VadStream:
+    """One person's VAD: feed chunks of any length, get a probability per 32 ms."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.state = np.zeros((2, 1, 128), np.float32)
+        self.ctx = np.zeros(VAD_CONTEXT, np.float32)
+        self.rest = np.zeros(0, np.float32)      # samples short of a full window, kept for next time
+
+    def feed(self, score, pcm: np.ndarray) -> list[float]:
+        x = np.concatenate([self.rest, pcm]) if len(self.rest) else pcm
+        n = len(x) // VAD_WINDOW
+        probs = []
+        for i in range(n):
+            w = x[i * VAD_WINDOW:(i + 1) * VAD_WINDOW]
+            p, self.state = score(np.concatenate([self.ctx, w]), self.state)
+            self.ctx = w[-VAD_CONTEXT:]
+            probs.append(p)
+        self.rest = x[n * VAD_WINDOW:]
+        return probs
+
+
 # ---------------------------------------------------------------- segmenter
 class Segmenter:
-    """Energy-gate VAD for one person's stream: 256 ms frames -> utterances."""
+    """One person's stream -> utterances. Loudness is a cheap first gate; what
+    passes it is scored by the VAD (once loaded), which decides speech."""
 
     def __init__(self, out: queue.Queue, threshold: float, label: str, uid: str = "",
-                 silence_ms=700, max_ms=25000, preroll_ms=300):
+                 silence_ms=700, max_ms=25000, preroll_ms=300, vad_threshold: float | None = 0.5):
         self.out, self.threshold, self.label, self.uid = out, threshold, label, uid
+        self.vad_threshold = vad_threshold        # None: loudness only
         self.channel: dict | None = None
         self.silence_ms, self.max_ms, self.preroll_ms = silence_ms, max_ms, preroll_ms
         self.pre: deque[tuple[float, np.ndarray]] = deque()
@@ -71,6 +158,13 @@ class Segmenter:
         self.noise = threshold
         self.last_seen = time.time()
         self.last_end = 0.0          # audio-clock end of the previous chunk (ms)
+        self.vad = VadStream()
+        self.voiced_ms = 0.0         # VAD-scored speech in the current utterance
+        self.cur_vad = False         # the current utterance was started by the VAD
+        self.level = 0.0             # typical loudness of the current utterance's speech
+        self.carry = False           # the last utterance was cut at max_ms: what follows continues it
+        self.cur_carry = False       # the current utterance is such a continuation
+        self.dropped = 0             # utterances the VAD found too little speech in
 
     def push(self, t: float, pcm: np.ndarray):
         self.last_seen = time.time()
@@ -79,24 +173,55 @@ class Segmenter:
         # silence that was skipped: count it, and end the utterance if it's long.
         gap = t - self.last_end if self.last_end else 0
         self.last_end = t + dur
-        if self.cur and gap > 300:
-            self.silent_ms += gap
-            if self.silent_ms >= self.silence_ms:
-                self.flush()
+        if gap > 300:
+            self.vad.reset()                     # unrelated audio follows: start the VAD fresh
+            if self.cur or self.carry:
+                self.silent_ms += gap
+                if self.silent_ms >= self.silence_ms:
+                    self.flush()
+                    self.carry = False           # (a pause this long ends a carry too)
         rms = float(np.sqrt(np.mean(pcm * pcm))) if len(pcm) else 0.0
-        speech = rms > max(self.threshold, self.noise * 3)
+        score = Vad.model if self.vad_threshold is not None else None
+        voiced = 0
+        going = bool(self.cur) or self.carry
+        if score is None:
+            speech = rms > max(self.threshold, self.noise * 3)
+        elif rms > self.threshold * VAD_WARM or going:
+            # Near a voice's loudness (or mid-utterance, where the VAD's
+            # memory of the voice matters): ask the model. Silero is slow to
+            # rise at onsets, so once speaking, a lower bar keeps it going.
+            probs = self.vad.feed(score, pcm)
+            voiced = sum(p > self.vad_threshold for p in probs)
+            stay = self.vad_threshold - 0.15 if going else self.vad_threshold
+            bar = max(self.threshold * VAD_FLOOR, self.level * VAD_REL) if going else self.threshold * VAD_START
+            speech = rms > bar and any(p > stay for p in probs)
+            if speech:
+                self.level = 0.8 * self.level + 0.2 * rms if going else rms
+        else:
+            self.vad.reset()                     # quiet, between utterances: nothing worth remembering
+            speech = False
         if not speech:
-            self.noise = 0.98 * self.noise + 0.02 * rms
+            self.noise = 0.98 * self.noise + 0.02 * rms   # (only the loudness-only gate uses it)
         if self.cur:
             self.cur.append((t, pcm))
+            self.voiced_ms += voiced * VAD_WINDOW / SR * 1000
             self.silent_ms = 0 if speech else self.silent_ms + dur
-            if self.silent_ms >= self.silence_ms or self.cur[-1][0] + dur - self.cur[0][0] >= self.max_ms:
+            if self.silent_ms >= self.silence_ms:
                 self.flush()
+            elif self.cur[-1][0] + dur - self.cur[0][0] >= self.max_ms:
+                self.flush()
+                self.carry = True                # mid-speech cut: the rest is the same person still talking
         elif speech:
             self.cur = list(self.pre) + [(t, pcm)]
             self.pre.clear()
             self.silent_ms = 0
+            self.voiced_ms = voiced * VAD_WINDOW / SR * 1000
+            self.cur_vad = score is not None
+            self.cur_carry, self.carry = self.carry, False
         else:
+            if self.carry:                       # a pause after the cut: still the same talk until it's a long one
+                self.silent_ms += dur
+                self.carry = self.silent_ms < self.silence_ms
             self.pre.append((t, pcm))
             while self.pre and t - self.pre[0][0] > self.preroll_ms:
                 self.pre.popleft()
@@ -112,6 +237,19 @@ class Segmenter:
         for t, p in self.cur:
             marks.append((off, t)); off += len(p)
         self.cur, self.silent_ms = [], 0
+        self.carry = False
+        # A quick "no" or "yes" scores about 250 ms of speech; a cough, a click
+        # or a breath that fooled the VAD for a window or two doesn't. (The
+        # tail of a talk cut at max_ms is exempt: it can be one short word.)
+        if self.cur_vad and not self.cur_carry and self.voiced_ms < VAD_MIN_VOICED_MS:
+            self.dropped += 1
+            print(f"  Speech detection: dropped a {len(audio) / SR:.1f} s sound with only "
+                  f"{self.voiced_ms:.0f} ms of speech ({self.dropped} so far for this person)", flush=True)
+            return
+        if self.cur_vad and self.cur_carry and len(audio) < SR * 0.4:
+            # The last word of a talk cut at max_ms can be a single chunk:
+            # pad it with silence rather than lose it to the length minimum.
+            audio = np.pad(audio, (0, int(SR * 0.4) - len(audio)))
         if len(audio) >= SR * 0.4:
             self.out.put((t0, audio, self.label, self.uid, self.channel, marks))
 
@@ -856,6 +994,7 @@ SETTING_DEFAULTS = {"splitLines": True, "personality": True, "autoUpdate": True,
 SETTING_CHOICES = {"sensitivity": ["high", "normal", "low"],
                    "language": ["en", "auto", "es", "fr", "de", "it", "pt", "nl", "pl", "ru", "uk", "ja", "zh", "ko"]}
 SENSITIVITY = {"high": 0.5, "normal": 1.0, "low": 2.0}     # x the speech threshold: high hears quieter voices
+VAD_SENSITIVITY = {"high": 0.35, "normal": 0.5, "low": 0.65}  # speech probability the VAD must reach (Silero's default is 0.5)
 
 
 PLUGINS_DIR = ROOT / "plugins"
@@ -1477,6 +1616,7 @@ async def main():
     ap.add_argument("--model", default=None, help="model id for the engine (default depends on the engine)")
     ap.add_argument("--language", default="en", help="for Whisper/Qwen models; 'auto' to detect")
     ap.add_argument("--threshold", type=float, default=0.008, help="speech RMS threshold (0-1)")
+    ap.add_argument("--no-vad", action="store_true", help="decide speech by loudness only (no Silero VAD)")
     ap.add_argument("--out", default=None, help="transcript folder (default: ../transcripts)")
     ap.add_argument("--parent-pid", type=int, default=0, help="exit when this process (the app) goes away")
     args = ap.parse_args()
@@ -1526,6 +1666,8 @@ async def main():
     hub.loop = asyncio.get_running_loop()
     hub.parent_pid = args.parent_pid
     threading.Thread(target=hub.sample_resources, daemon=True).start()
+    if not args.no_vad:
+        Vad.load_async()                 # speech detection; loudness only until it's ready
     writer = Writer(hub)
     writer.q = q
     updater = Updater(hub)
@@ -1614,6 +1756,8 @@ async def main():
                 if res.get("ok") and params["key"] == "sensitivity":
                     for p in hub.people.values():
                         p.threshold = args.threshold * SENSITIVITY[res["sensitivity"]]
+                        if p.vad_threshold is not None:
+                            p.vad_threshold = VAD_SENSITIVITY[res["sensitivity"]]
                 return respond(res, status=400 if "error" in res else 200)
             return respond({**current_settings(), "choices": SETTING_CHOICES})
         if path == "/api/persona/info":
@@ -1751,8 +1895,10 @@ async def main():
                         continue                       # (hands over at once when that one stands by)
                     hub.uid_owner[uid] = (ws, now_t)
                     if uid not in people:
-                        people[uid] = Segmenter(q, args.threshold * SENSITIVITY.get(current_settings()["sensitivity"], 1.0),
-                                                label=f"user-{uid[-4:]}", uid=uid)
+                        sens = current_settings()["sensitivity"]
+                        people[uid] = Segmenter(q, args.threshold * SENSITIVITY.get(sens, 1.0),
+                                                label=f"user-{uid[-4:]}", uid=uid,
+                                                vad_threshold=None if args.no_vad else VAD_SENSITIVITY.get(sens, 0.5))
                     if ev.get("name"):
                         people[uid].label = ev["name"]
                         hub.learn_name(uid, ev["name"])
