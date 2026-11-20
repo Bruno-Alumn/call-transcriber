@@ -28,3 +28,4 @@ plugins/*
 
 # per-install settings (written by the app)
 settings.json
+.claude/
