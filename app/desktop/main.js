@@ -5,7 +5,7 @@
 //  - Dashboard window: the server's live dashboard.
 //  - Discord window: discord.com in a built-in Chromium. page-hook.js is
 //    injected before Discord's scripts run and each person's audio is relayed
-//    to the server here, so no Chrome or extension is needed.
+//    to the server here.
 const { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, powerSaveBlocker,
   session, shell, desktopCapturer, systemPreferences } = require('electron');
 const { spawn, execFile } = require('child_process');
@@ -158,7 +158,7 @@ function connectServer() {
   sock.onopen = () => { wsOpen = true; broadcast(); };
   sock.onclose = () => { if (ws === sock) { wsOpen = false; ws = null; broadcast(); } setTimeout(connectServer, 2000); };
   sock.onerror = () => {};
-  sock.onmessage = () => {};          // ('reload' is for the Chrome extension; reloading here would drop the call)
+  sock.onmessage = () => {};
 }
 const send = (obj) => { if (wsOpen && ws?.readyState === 1) try { ws.send(JSON.stringify(obj)); } catch {} };
 
@@ -183,7 +183,7 @@ function setMuted(on) {
   broadcast(); buildMenu();
 }
 
-// Names learned in earlier calls (Discord-in-app's own memory, like the extension's storage).
+// Names learned in earlier calls (kept by the app between sessions).
 const namesFile = () => path.join(app.getPath('userData'), 'names.json');
 const loadNames = () => { try { return JSON.parse(fs.readFileSync(namesFile(), 'utf8')); } catch { return {}; } };
 
@@ -196,7 +196,7 @@ let hookSource = '';
 ipcMain.on('ct:hook-source', (e) => {
   // Only for the Discord window's top frame (preloads only run there anyway).
   e.returnValue = discord && !discord.isDestroyed() && e.sender === discord.webContents
-    ? (hookSource ||= fs.readFileSync(path.join(ROOT, 'extension', 'page-hook.js'), 'utf8')) : '';
+    ? (hookSource ||= fs.readFileSync(path.join(__dirname, 'page-hook.js'), 'utf8')) : '';
 });
 ipcMain.on('ct:hello', (e) => {
   if (!fromDiscord(e)) return;

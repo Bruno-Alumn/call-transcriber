@@ -1,5 +1,5 @@
 // Preload for the built-in Discord window (isolated world, sandboxed).
-// Replaces the Chrome extension: injects page-hook.js into Discord's own page
+// Injects page-hook.js into Discord's own page
 // before any of Discord's scripts run, and relays the per-person audio it
 // posts to the main process (which holds the connection to the local server).
 const { ipcRenderer, webFrame } = require('electron');

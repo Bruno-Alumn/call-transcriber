@@ -15,11 +15,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
-      - name: Extension + dashboard JavaScript
+      - name: App + dashboard JavaScript
         run: |
-          for f in extension/*.js app/desktop/*.js test/app-test.js; do node --check "$f"; done
+          for f in app/desktop/*.js test/app-test.js; do node --check "$f"; done
           node -e "const s=require('fs').readFileSync('server/dashboard/index.html','utf8'); new Function(s.slice(s.indexOf('<script>')+8, s.lastIndexOf('</script>'))); console.log('dashboard ok')"
-          python3 -c "import json; json.load(open('extension/manifest.json'))"
       - name: Python
         run: python3 -m py_compile server/server.py app/windows/call_transcriber.pyw test/server_e2e.py
 

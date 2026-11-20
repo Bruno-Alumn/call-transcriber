@@ -1,6 +1,6 @@
-"""Local transcription server for the Discord Transcriber extension.
+"""Local transcription server for Call Transcriber.
 
-The extension sends each call participant's audio as its own stream
+The desktop app sends each call participant's audio as its own stream
 (16 kHz mono int16, tagged with their Discord user id and name). Per person,
 we cut the stream into utterances on silence, transcribe each utterance
 locally with an MLX speech model, and append "[time] Name: text" to
@@ -381,11 +381,8 @@ class Updater:
                           "rebuildMac": any(f.startswith("app/mac/") or f.startswith("app/desktop/package") for f in files),
                           "app": any(f.startswith("app/desktop/package") for f in files),   # new Electron / npm packages
                           "deps": any(f in ("server/pyproject.toml", "server/uv.lock") for f in files),
-                          "extension": any(f.startswith("extension/") for f in files),
                           "server": any(f.startswith("server/") for f in files)}
                 st.update(applied=result, available=False, current=self.current())
-                if result["extension"]:
-                    self.hub.tell_extensions({"type": "reload"})     # it reloads itself from disk
                 return result
             finally:
                 st["busy"] = False
@@ -982,7 +979,7 @@ async def main():
             return Response(403, "Forbidden", Headers([("Content-Length", "0")]), b"")
         if request.headers.get("Upgrade", "").lower() == "websocket":
             origin = request.headers.get("Origin")
-            if origin and not re.match(r"^(https://discord\.com|chrome-extension://|http://(127\.0\.0\.1|localhost)(:\d+)?$)", origin):
+            if origin and not re.match(r"^http://(127\.0\.0\.1|localhost)(:\d+)?$", origin):   # the app (no Origin) or the dashboard
                 return Response(403, "Forbidden", Headers([("Content-Length", "0")]), b"")
             return None
         path, _, query = request.path.partition("?")
@@ -1119,7 +1116,7 @@ async def main():
         hub.extensions += 1
         hub.ext_sockets.add(ws)
         last_status = time.time()
-        print("Extension connected.", flush=True)
+        print("Discord window connected.", flush=True)
 
         async def flush_quiet():
             # Someone left or went silent without trailing quiet audio: flush them.
@@ -1162,7 +1159,7 @@ async def main():
             flusher.cancel()
             for p in people.values():
                 p.flush()
-            print("Extension disconnected.", flush=True)
+            print("Discord window disconnected.", flush=True)
 
     async with websockets.serve(handle, "127.0.0.1", args.port, max_size=2**22, process_request=http):
         print(f"Dashboard: http://127.0.0.1:{args.port}/  ·  transcripts → {TRANSCRIPTS}", flush=True)

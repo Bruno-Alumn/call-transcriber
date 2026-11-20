@@ -89,7 +89,7 @@ dashboard ◀──HTTP + live updates── local server
 |---|---|
 | Desktop app (Electron): dashboard, call window, share picker, tray | `app/desktop/` |
 | Transcription server and dashboard | `server/` |
-| Hook that reads each person's audio | `extension/page-hook.js` |
+| Hook that reads each person's audio | `app/desktop/page-hook.js` |
 | Mac app build | `app/mac/build.sh` |
 | Windows installer | `install.cmd`, `install.ps1`, `app/windows/` |
 | Tests | `test/` |

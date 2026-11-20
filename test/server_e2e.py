@@ -1,7 +1,7 @@
 """End-to-end server test (same on macOS, Windows, Linux).
 
 Starts server.py on a spare port with a temp transcripts folder, feeds three
-overlapping speakers exactly as the Chrome extension does (per-person audio,
+overlapping speakers exactly as the desktop app does (per-person audio,
 names, voice channel), and checks the transcript.
 
   python test/server_e2e.py [--engine onnx|mlx|torch|auto]

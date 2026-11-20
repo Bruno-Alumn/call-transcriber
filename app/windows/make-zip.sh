@@ -5,9 +5,7 @@ cd "$(dirname "$0")/../.."
 OUT=dist/CallTranscriber-Windows.zip
 STAGE=$(mktemp -d)/CallTranscriber
 mkdir -p "$STAGE/server" "$STAGE/app/windows" "$STAGE/app/desktop" dist
-cp app/desktop/*.js app/desktop/package.json app/desktop/package-lock.json "$STAGE/app/desktop/"
-cp -R extension "$STAGE/extension"
-rm -rf "$STAGE/extension/events"
+rsync -a --exclude node_modules app/desktop/ "$STAGE/app/desktop/"
 cp server/server.py server/pyproject.toml server/uv.lock server/.python-version "$STAGE/server/"
 cp -R server/dashboard "$STAGE/server/dashboard"; find "$STAGE" -name events -type d -prune -exec rm -rf {} +
 cp app/windows/call_transcriber.pyw app/windows/icon.ico app/windows/icon.png "$STAGE/app/windows/"
