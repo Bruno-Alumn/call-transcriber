@@ -140,7 +140,7 @@ class Writer:
         if bg:
             rec["bg"] = True             # not the person's own voice (a video, someone in their room)
         with self.lock:
-            self.pending.append((t_ms, when, speaker, text, (ch or {}).get("name"), time.time(), rec["id"]))
+            self.pending.append((t_ms, when, speaker, text, (ch or {}).get("name"), time.time(), rec["id"], bg))
         self.flush_md()
         if ch and ch.get("id"):
             rec.update({"ch": ch["id"], "chName": ch.get("name"), "guild": ch.get("guild"), "guildName": ch.get("guildName")})
@@ -185,7 +185,7 @@ class Writer:
                 self.pending = [x for x in self.pending if x[6] not in ids]
                 for rec in new:
                     w = dt.datetime.fromtimestamp(rec["t"] / 1000)
-                    self.pending.append((rec["t"], w, rec["speaker"], rec["text"], rec.get("chName"), time.time(), rec["id"]))
+                    self.pending.append((rec["t"], w, rec["speaker"], rec["text"], rec.get("chName"), time.time(), rec["id"], bool(rec.get("bg"))))
         self.hub.publish({"type": "replace", "ids": ids, "lines": new})
         self.flush_md()
 
@@ -223,12 +223,14 @@ class Writer:
                 return
             cut = max(i for i, x in enumerate(self.pending) if x in ready) + 1
             ready, self.pending = self.pending[:cut], self.pending[cut:]
-        for t_ms, when, speaker, text, chname, _, _ in ready:
+        for t_ms, when, speaker, text, chname, _, _, bg in ready:
             md, _ = self._paths(when)
             with md.open("a", encoding="utf-8") as f:
-                f.write(f"**[{when:%H:%M:%S}] {speaker}{f' · {chname}' if chname else ''}:** {text}\n\n")
+                # Background voices are marked, so the readable transcript doesn't put a video's words in their mouth.
+                f.write(f"**[{when:%H:%M:%S}] {speaker}{f' · {chname}' if chname else ''}:** {BG_MARK if bg else ''}{text}\n\n")
 
 
+BG_MARK = "(background voice) "      # .md prefix for lines that didn't sound like the speaker
 MD_LINE = re.compile(r"^\*\*\[(\d\d):(\d\d):(\d\d)\] (.+?):\*\* (.*)$")
 
 
@@ -304,14 +306,17 @@ def build_calls(day: str, recs: list[dict]) -> list[dict]:
     for c in calls:
         talk: dict[str, float] = {}
         words = 0
-        for r in c["lines"]:
+        own = [r for r in c["lines"] if not r.get("bg")]     # background voices aren't the person talking
+        for r in own:
             talk[r["speaker"]] = talk.get(r["speaker"], 0) + (r["end"] - r["t"]) / 1000
             words += len(r["text"].split())
         people = sorted(talk.items(), key=lambda kv: -kv[1])
+        last = own or c["lines"]
         out.append({"id": f"{day}@{c['start']}", "day": day, "start": c["start"], "end": c["end"],
                     "ch": c["ch"], "chName": c["chName"], "guild": c["guild"], "guildName": c["guildName"],
-                    "people": [p for p, _ in people], "lines": len(c["lines"]), "words": words,
-                    "preview": next((r["text"] for r in reversed(c["lines"]) if len(r["text"]) > 20), c["lines"][-1]["text"])[:120]})
+                    "people": [p for p, _ in people], "lines": len(own), "words": words,
+                    "total": len(c["lines"]),          # every line, background included (what a delete removes)
+                    "preview": next((r["text"] for r in reversed(last) if len(r["text"]) > 20), last[-1]["text"])[:120]})
     return out
 
 
@@ -1351,7 +1356,7 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
             hub.busy_t0 = t0
         except queue.Empty:
             continue
-        voice = voice_pool.submit(voices.check, uid or who, audio) if voices else None
+        voice = voice_pool.submit(voices.embed, audio) if voices else None
         try:
             started = time.time()
             res = model_run(audio) or ""
@@ -1370,16 +1375,17 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
             parts = [(text, 0.0, len(audio) / SR)]
         else:
             parts = split_timed(res["pieces"]) if isinstance(res, dict) and res.get("pieces") else split_by_text(text, len(audio) / SR)
-        try:
-            bg = bool(voice and voice.result(timeout=10))
-        except Exception:
-            bg = False
+        keep = [(p, a, b) for p, a, b in ((tidy(p), a, b) for p, a, b in parts) if p and p.lower() not in HALLUCINATIONS]
+        bg = False
+        if voice and keep:              # only speech that became a line shapes the voices (not music or noise)
+            try:
+                bg = voices.judge(uid or who, voice.result(timeout=10), len(audio) / SR)
+            except Exception:
+                pass
         written = []
-        for part, a, b in parts:
-            part = tidy(part)
-            if part and part.lower() not in HALLUCINATIONS:
-                start = to_clock(marks, a)
-                written.append(writer.write(start, max(0.3, (to_clock(marks, b) - start) / 1000), uid, who, part, ch, bg))
+        for part, a, b in keep:
+            start = to_clock(marks, a)
+            written.append(writer.write(start, max(0.3, (to_clock(marks, b) - start) / 1000), uid, who, part, ch, bg))
         if refine_run and written:
             hub.refine_q.append({"t0": t0, "audio": audio, "marks": marks, "lines": written, "queued": time.time()})
         hub.busy_t0 = None
@@ -1591,7 +1597,7 @@ async def main():
                 return respond({"ok": True})
             if params.get("dry") == "1":
                 n_calls = sum(1 for d in all_days() for c in day_data(d)[1] if group_match(c, kind, key))
-                n_lines = sum(c["lines"] for d in all_days() for c in day_data(d)[1] if group_match(c, kind, key))
+                n_lines = sum(c["total"] for d in all_days() for c in day_data(d)[1] if group_match(c, kind, key))
                 return respond({"calls": n_calls, "lines": n_lines})
             return respond(delete_group(kind, key))
         if path == "/api/search":
@@ -1605,7 +1611,7 @@ async def main():
                 for r in reversed(recs):
                     if q in r["text"].lower() or q in r["speaker"].lower():
                         call = next((c for c in calls if c["start"] <= r["t"] <= c["end"]), None)
-                        hits.append({"day": d, "t": r["t"], "speaker": r["speaker"], "text": r["text"],
+                        hits.append({"day": d, "t": r["t"], "speaker": r["speaker"], "text": r["text"], "bg": bool(r.get("bg")),
                                      "chName": r.get("chName") or (call or {}).get("chName"), "call": call and call["id"]})
                         if len(hits) >= 150:
                             return respond(hits)

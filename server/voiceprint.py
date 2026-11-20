@@ -12,11 +12,18 @@ per second of speech on an M-series Mac with 2 threads (ResNet34 was 3x slower
 for the same accuracy).
 
 The first voice we hear might itself be the video, so nobody is enrolled from a
-single utterance. Clean utterances (2 s or more) are grouped into voices; the
-person is the voice with the most speech this session, and only once it has
-enough (several utterances, 20 s) and clearly leads every other voice. Until
-then nothing is flagged. A video heard first is overtaken as soon as the person
-has talked more than it, and the voiceprint then moves to the person.
+single utterance. Clean utterances that become lines are grouped into voices;
+the person is the voice with the most speech this session, and only once it has
+enough (several utterances, 20 s). Embeddings alone can't tell "a video, then the
+person" from "the person, then a video", so whenever it is unclear we flag
+nothing rather than risk hiding the person's own words:
+- the voice holding the voiceprint keeps it until another has 1.5x its speech,
+  and does not fade while others talk (a long video doesn't wear it away);
+  while another voice has more than 2/3 of its speech, nothing is flagged;
+- a voice that held the voiceprint for 40 s of its own speech is trusted and
+  never flagged again (if a video took over, the person's own lines stay
+  unflagged when they come back). A shorter hold is not trusted: that is how a
+  video heard first, before the person said anything, looks.
 """
 
 import threading
@@ -38,8 +45,9 @@ CLEAN_S = 1.2        # only utterances this long shape the voices (our segmenter
 MAX_S = 12.0         # longer audio is cropped to its middle (speed)
 ENROL_N = 4          # utterances, and
 ENROL_S = 20.0       # seconds of speech the person's voice needs before anything is flagged
-LEAD = 1.5           # ... and it must have this many times the speech of the next voice
+LEAD = 1.5           # another voice needs this many times the holder's speech to take the voiceprint
 FADE = 0.995         # per clean utterance: old speech counts a little less (half after ~140)
+TRUST_S = 40.0       # seconds a voice speaks while holding the voiceprint before it is never flagged
 MAX_VOICES = 8
 
 
@@ -131,45 +139,71 @@ class Embedder:
 class Person:
     """The voices heard on one person's mic this session, as clusters of clean
     utterances weighted by seconds of speech (slowly fading, so the voiceprint
-    follows a changed mic or room). The person is the voice heard most; a video
-    heard first loses that place once the person has talked more than it."""
+    follows a changed mic or room). The person is the voice heard most; see the
+    module notes for how a takeover is handled."""
 
     def __init__(self):
-        self.voices: list[list] = []       # [centroid (unit vector), seconds, utterances]
+        # [centroid (unit vector), seconds, utterances, seconds spoken while holding the voiceprint]
+        self.voices: list[list] = []
+        self.holder = None                 # the voice whose centroid is the voiceprint
         self.flagged = self.judged = 0
 
     @property
     def print(self):
         """The voiceprint, or None while it is not yet clear whose mic this is."""
-        if not self.voices:
+        h = self.holder
+        if h is None:
             return None
-        v = sorted(self.voices, key=lambda x: -x[1])
-        top, second = v[0], (v[1][1] if len(v) > 1 else 0.0)
-        if top[1] < ENROL_S or top[2] < ENROL_N or top[1] < LEAD * second:
-            return None
-        return top[0]
+        if any(LEAD * v[1] > h[1] for v in self.voices if v is not h):
+            return None                    # another voice is catching up: unclear, flag nothing
+        return h[0]
+
+    def _pick_holder(self):
+        top = max(self.voices, key=lambda v: v[1], default=None)
+        if top is None or top is self.holder or top[1] < ENROL_S or top[2] < ENROL_N:
+            return
+        if self.holder is None:
+            # First enrolment: it must clearly lead every other voice.
+            if all(top[1] >= LEAD * v[1] for v in self.voices if v is not top):
+                self.holder = top
+        elif top[1] >= LEAD * self.holder[1]:
+            self.holder = top
 
     def _learn(self, e: np.ndarray, secs: float):
-        for v in self.voices:
-            v[1] *= FADE
         best = max(self.voices, key=lambda v: float(v[0] @ e), default=None)
-        if best is not None and float(best[0] @ e) > SAME:
+        joins = best if best is not None and float(best[0] @ e) > SAME else None
+        for v in self.voices:
+            # The holder only fades on its own speech: a long video must not wear it away.
+            if v is not self.holder or joins is self.holder:
+                v[1] *= FADE
+        if joins is not None:
+            best = joins
             c = best[0] * best[1] + e * secs
             best[0], best[1], best[2] = c / np.linalg.norm(c), best[1] + secs, best[2] + 1
+            if best is self.holder:
+                best[3] += secs
             # A voice can start as two groups (a laugh, a quieter stretch) that
             # grow together: merge them once their centres agree.
             twins = [v for v in self.voices if v is not best and float(v[0] @ best[0]) > SAME]
             for v in twins:
                 c = best[0] * best[1] + v[0] * v[1]
-                best[0], best[1], best[2] = c / np.linalg.norm(c), best[1] + v[1], best[2] + v[2]
+                best[0], best[1], best[2], best[3] = c / np.linalg.norm(c), best[1] + v[1], best[2] + v[2], best[3] + v[3]
+                if v is self.holder:
+                    self.holder = best
             self.voices = [v for v in self.voices if not any(v is t for t in twins)]
         else:
-            self.voices.append([e, secs, 1])
-            if len(self.voices) > MAX_VOICES:                 # forget the least heard
-                least = min(self.voices, key=lambda v: v[1])
+            new = [e, secs, 1, 0.0]
+            if len(self.voices) >= MAX_VOICES:
+                # Forget the least heard older voice: never the one just heard
+                # (it could never grow), the holder, or a trusted voice.
+                old = [v for v in self.voices if v is not self.holder and v[3] < TRUST_S] or \
+                      [v for v in self.voices if v is not self.holder]
+                least = min(old, key=lambda v: v[1])
                 self.voices = [v for v in self.voices if v is not least]
+            self.voices.append(new)
+        self._pick_holder()
 
-    def check(self, e: np.ndarray, secs: float) -> tuple[bool, float | None]:
+    def judge(self, e: np.ndarray, secs: float) -> tuple[bool, float | None]:
         """Background or not, and the similarity (None while not enrolled)."""
         if secs >= CLEAN_S:
             self._learn(e, secs)
@@ -177,9 +211,13 @@ class Person:
         if p is None:
             return False, None
         s = float(p @ e)
-        bg = secs >= MIN_S and s < BACKGROUND
+        # Like a trusted voice (one that held the voiceprint a while)? Then it may be the person.
+        like_former = any(v[3] >= TRUST_S and float(v[0] @ e) >= BACKGROUND for v in self.voices)
+        bg = secs >= MIN_S and s < BACKGROUND and not like_former
         self.judged += 1; self.flagged += bg
         return bg, s
+
+    check = judge
 
 
 class Voiceprints:
@@ -191,18 +229,29 @@ class Voiceprints:
         self.people: dict[str, Person] = {}
         self.ms: deque = deque(maxlen=200)     # embedding time per utterance (ms)
 
-    def check(self, key: str, audio: np.ndarray) -> bool:
-        """True when the utterance clearly is not this person's voice."""
-        secs = len(audio) / SR
-        if secs < MIN_S:
-            return False
+    def embed(self, audio: np.ndarray):
+        """The speaker embedding (None if too short, or the model isn't loaded).
+        Runs next to transcription; judge() once we know a line will be written."""
+        if len(audio) / SR < MIN_S:
+            return None
         t = time.perf_counter()
         try:
             e = self.embedder(audio)
         except Exception as ex:                 # never lose a line over this
             print("voiceprint error:", ex, flush=True)
-            return False
+            return None
+        if e is not None:
+            self.ms.append((time.perf_counter() - t) * 1000)
+        return e
+
+    def judge(self, key: str, e, secs: float) -> bool:
+        """True when the utterance clearly is not this person's voice. Only call
+        it for utterances that became lines: music, noise and hallucinations
+        must not shape the voices."""
         if e is None:
             return False
-        self.ms.append((time.perf_counter() - t) * 1000)
-        return self.people.setdefault(key or "?", Person()).check(e, secs)[0]
+        return self.people.setdefault(key or "?", Person()).judge(e, secs)[0]
+
+    def check(self, key: str, audio: np.ndarray) -> bool:
+        """embed() and judge() in one (tests)."""
+        return self.judge(key, self.embed(audio), len(audio) / SR)
