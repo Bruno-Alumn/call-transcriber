@@ -181,6 +181,7 @@ select:focus, input:focus { border-color: var(--accent); }
 .lcol { display: flex; flex-direction: column; gap: 14px; min-height: 0; min-width: 0; overflow-y: auto; overscroll-behavior: contain; padding-right: 2px; }
 .lcol > .card { flex: 0 0 auto; }
 .lcol > .card.grow { flex: var(--grow, 1) 1 0; min-height: 0; overflow: hidden; }
+body:not(.compact) .lcol > .card.grow:not([data-panel="transcript"]) { min-height: 190px; }
 .card.grow > .body, .card.grow > .feed, .card.grow > .pers { flex: 1; min-height: 0; overflow: hidden; }
 .card.grow.c-act > .body { display: flex; }
 .card.grow #act { height: 100%; min-height: 60px; }
@@ -1037,7 +1038,9 @@ function renderWords() {
       counts.set(w, (counts.get(w) || 0) + 1);
     }
   }
-  const top = [...counts].sort((a, b) => b[1] - a[1]).slice(0, 16);
+    // a stretched panel shows as many words as fit (two columns, about 33 px a row)
+  const wc = $('#words').closest('.card.grow'), fit = wc && !compact ? Math.floor((wc.clientHeight - 60) / 33) * 2 : 0;
+  const top = [...counts].sort((a, b) => b[1] - a[1]).slice(0, Math.max(16, Math.min(60, fit)));
   const max = top[0]?.[1] || 1;
   $('#wordmeta').textContent = filter ? 'by ' + nameFor(filter) : 'everyone';
   $('#words').innerHTML = top.map(([w, c]) => `<div class="word"><span class="w"><i style="transform:scaleX(${(c / max).toFixed(3)})"></i><b>${esc(w)}</b></span><span class="c">${c}</span></div>`).join('') || '<div class="empty" style="padding:8px">—</div>';
@@ -1587,13 +1590,36 @@ document.querySelectorAll('.card[data-panel]').forEach((el) => panels.set(el.dat
 let curLayout = null, editing = false;
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const layoutMode = () => (SHARE ? 'share' : compact ? 'compact' : 'normal');
+// Until you arrange the normal layout yourself, it follows the room there is:
+// two columns on a laptop, three or four on a big screen, with the charts
+// stretching to fill the height so nothing needs scrolling. Sizes are in CSS
+// pixels, which already follow each display's own scaling (Retina, Windows
+// display scale), so the same window looks the same size on every screen.
+const AUTO_WIDE = {
+  3: { kpis: true, cols: [{ w: 1.3, panels: [P('transcript', 1)] },
+    { w: 1, panels: [P('live'), P('resources'), P('talk'), P('words', 1)] },
+    { w: 1, panels: [P('activity', 1), P('timeline')] }] },
+  4: { kpis: true, cols: [{ w: 1.4, panels: [P('transcript', 1)] },
+    { w: 1, panels: [P('live'), P('talk'), P('words', 1)] },
+    { w: 1.2, panels: [P('activity', 1), P('timeline')] },
+    { w: 0.8, panels: [P('resources'), P('persona')] }] },
+};
+const autoCols = () => { const w = $('#layout')?.clientWidth || innerWidth; return w >= 2100 ? 4 : w >= 1380 ? 3 : 2; };
+let autoShape = 0;
+function storedLayout(mode) { try { const L = JSON.parse(localStorage.getItem('ct-layout-' + mode)); if (L?.cols?.length) return L; } catch {} return null; }
+function autoExtras() { try { return JSON.parse(localStorage.getItem('ct-layout-extra') || '[]'); } catch { return []; } }
 function loadLayout() {
   const mode = layoutMode();
-  if (mode !== 'share') {
-    try { const L = JSON.parse(localStorage.getItem('ct-layout-' + mode)); if (L?.cols?.length) return L; } catch {}
-  }
-  return clone(LAYOUT_DEFAULTS[mode]);
+  autoShape = 0;
+  if (mode !== 'share') { const L = storedLayout(mode); if (L) return L; }
+  if (mode !== 'normal') return clone(LAYOUT_DEFAULTS[mode]);
+  autoShape = autoCols();
+  const L = clone(AUTO_WIDE[autoShape] || LAYOUT_DEFAULTS.normal);
+  for (const e of autoExtras()) if (!L.cols.some((c) => c.panels.some((p) => p.id === e.id))) L.cols[L.cols.length - 1].panels.push(P(e.id, e.grow));
+  return L;
 }
+// re-pick the automatic layout when the window or the calls list changes its width
+new ResizeObserver(() => { if (autoShape && !editing && autoCols() !== autoShape) applyLayout(); }).observe(document.querySelector('#layout'));
 function saveLayout() { if (!SHARE) try { localStorage.setItem('ct-layout-' + layoutMode(), JSON.stringify(curLayout)); } catch {} }
 function panelShown(id) { return !!curLayout && panels.has(id) && curLayout.cols.some((c) => c.panels.some((p) => p.id === id)); }
 function applyLayout() {
@@ -1728,7 +1754,10 @@ const earshot = window.earshot = Object.freeze({
       try { render?.(el.querySelector('.body'), earshot, el); } catch (e) { el.querySelector('.body').textContent = 'Plugin error: ' + e.message; }
       const seen = 'ct-plugpanel-' + id;
       let first = true; try { first = !localStorage.getItem(seen); localStorage.setItem(seen, '1'); } catch {}
-      if (show && first && !SHARE) { const L = loadLayout(); L.cols[L.cols.length - 1].panels.push(P(id, grow)); curLayout = L; saveLayout(); }
+      if (show && first && !SHARE) {
+        if (layoutMode() === 'normal' && !storedLayout('normal')) { try { localStorage.setItem('ct-layout-extra', JSON.stringify([...autoExtras(), { id, grow }])); } catch {} }
+        else { const L = loadLayout(); L.cols[L.cols.length - 1].panels.push(P(id, grow)); curLayout = L; saveLayout(); }
+      }
       applyLayout();
       return el;
     },
@@ -2236,6 +2265,8 @@ if (window.ResizeObserver) {
     raf = requestAnimationFrame(() => { if (lines.length) { const s = stats(); renderActivity(s); renderTimeline(s); } });
   });
   ro.observe($('#act').parentElement); ro.observe($('#tl').parentElement);
+  let wordsH = -1;   // Most said shows more words when its panel gets taller
+  new ResizeObserver(() => { const c = $('#words').closest('.card'); const h = c?.classList.contains('grow') ? Math.floor(c.clientHeight / 66) : 0; if (h !== wordsH) { wordsH = h; renderWords(); } }).observe($('#words').closest('.card'));
   // "Live" re-folds when its panel gets narrower or wider without a window resize
   // (sidebar, panel layout). Outer width only: folding changes its own height, and
   // opening adds a scrollbar (which clientWidth would count, re-folding mid-click).
