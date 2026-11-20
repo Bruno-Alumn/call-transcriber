@@ -218,7 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
                 try? p.run(); p.waitUntilExit(); return p.terminationStatus
             }
-            if deps { _ = zsh("cd \"\(serverDir.path)\" && uv sync") }
+            if deps { _ = zsh("cd \"\(serverDir.path)\" && uv sync --inexact") }
             var ok = true
             if rebuild { ok = zsh("\"\(project.path)/app/mac/build.sh\"") == 0 }
             DispatchQueue.main.async {

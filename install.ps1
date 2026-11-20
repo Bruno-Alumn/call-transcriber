@@ -34,7 +34,7 @@ Step 'Installing Python 3.12 and the transcription server (first time: a few min
 Push-Location (Join-Path $Root 'server')
 try {
     $env:UV_PYTHON_PREFERENCE = 'only-managed'   # our own Python, not whatever else is installed (conda etc.)
-    uv sync
+    uv sync --inexact   # --inexact: keep the GPU engine (torch) installed below, not in the lock file
     if ($LASTEXITCODE -ne 0) { throw 'Installing the server packages failed (see the messages above).' }
 } finally { Pop-Location }
 

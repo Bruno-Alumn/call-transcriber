@@ -184,7 +184,7 @@ class App:
         if deps:
             import shutil
             uv = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv.exe")
-            subprocess.run([uv, "sync"], cwd=SERVER_DIR, creationflags=subprocess.CREATE_NO_WINDOW if IS_WIN else 0,
+            subprocess.run([uv, "sync", "--inexact"], cwd=SERVER_DIR, creationflags=subprocess.CREATE_NO_WINDOW if IS_WIN else 0,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # free the single-instance lock, start the new launcher, then quit this one
         global _instance_lock
