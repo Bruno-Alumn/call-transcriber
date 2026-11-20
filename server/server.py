@@ -1021,6 +1021,24 @@ def pick_engine(requested: str) -> str:
 # One utterance can hold several sentences while someone else replies in
 # between. Split it at sentence ends and pauses, and put each part at the time
 # it was actually said, so the transcript interleaves who said what when.
+def english_mask(tokenizer, size: int):
+    """Tokens a CTC model may emit when the call is in English: only ones made of
+    plain ASCII, so it can't drift into another language's words or script."""
+    ok = np.zeros(size, dtype=bool)
+    markers = str.maketrans("", "", "\u2581\u0120\u010a")      # SentencePiece / byte-BPE space and newline marks
+    name = getattr(tokenizer, "convert_ids_to_tokens", None) or getattr(tokenizer, "id_to_token")
+    for i in range(size):
+        try:
+            t = name(i)
+        except Exception:
+            t = None
+        if t is None:
+            continue
+        t = str(t).translate(markers)
+        ok[i] = all(ord(c) < 128 for c in t)
+    return ok
+
+
 def ctc_pieces(ids, audio_len: int, decode, blank: int) -> list[tuple[str, float, float]]:
     """Greedy CTC frames -> [(text added by this token, start s, end s)]."""
     n = len(ids)
@@ -1105,13 +1123,23 @@ def load_engine(engine: str, repo: str, language: str | None):
         from mlx_audio.stt import load
         model = load(repo)
         kw = {"language": language} if language and ("whisper" in repo.lower() or "qwen" in repo.lower()) else {}
+        if "granite-speech" in repo.lower() and "turboctc" not in repo.lower():      # Granite 2B
+            kw = {"punctuate": True}      # (a language hint made 2B less accurate on English: 6.7% vs 5.3% words wrong)
         if "turboctc" in repo.lower():                   # Granite 470M (CTC): word timing from its frames
             feat = sys.modules[type(model).__module__].compute_features
             blank = model.config.pad_token_id
             tok = model._tokenizer
+            mask = None
             def run_ctc(audio):
+                nonlocal mask
                 x = feat(model._load_audio(mx.array(audio)), num_mel_bins=model.config.encoder_config.num_mel_bins)[None]
-                ids = np.array(mx.argmax(model(x)[0], axis=-1))
+                logits = model(x)[0]
+                if language == "en":                     # English only: never pick another language's tokens
+                    if mask is None:
+                        m = english_mask(tok, logits.shape[-1]); m[blank] = True
+                        mask = mx.array(np.where(m, 0.0, -1e9).astype(np.float32))
+                    logits = logits + mask
+                ids = np.array(mx.argmax(logits, axis=-1))
                 pieces = ctc_pieces(ids, len(audio), lambda t: tok.decode(t, skip_special_tokens=True), blank)
                 return {"text": "".join(p[0] for p in pieces).strip(), "pieces": pieces}
             return run_ctc
@@ -1133,10 +1161,17 @@ def load_engine(engine: str, repo: str, language: str | None):
             model = AutoModelForCTC.from_pretrained(repo, dtype=half).to(dev).eval()
             blank = model.config.pad_token_id
             tk = getattr(proc, "tokenizer", proc)
+            mask = None
             def run(audio):
+                nonlocal mask
                 with torch.inference_mode():
                     inp = to_dev(proc([audio], sampling_rate=SR), model.dtype)
                     logits = model(**inp).logits[0]
+                    if language == "en":                 # English only: never pick another language's tokens
+                        if mask is None:
+                            m = english_mask(tk, logits.shape[-1]); m[blank] = True
+                            mask = torch.tensor(np.where(m, 0.0, -1e4), dtype=logits.dtype, device=logits.device)
+                        logits = logits + mask
                 ids = logits.argmax(-1).cpu().numpy()
                 pieces = ctc_pieces(ids, len(audio), lambda t: tk.decode(t, skip_special_tokens=True), blank)
                 return {"text": "".join(p[0] for p in pieces).strip(), "pieces": pieces}
@@ -1145,7 +1180,8 @@ def load_engine(engine: str, repo: str, language: str | None):
             from transformers import AutoModelForSpeechSeq2Seq
             model = AutoModelForSpeechSeq2Seq.from_pretrained(repo, dtype=torch.bfloat16 if dev == "cuda" else torch.float32).to(dev).eval()
             tok = proc.tokenizer
-            prompt = tok.apply_chat_template([{"role": "user", "content": "<|audio|>transcribe the speech with proper punctuation and capitalization."}],
+            ask = "<|audio|>transcribe the speech with proper punctuation and capitalization."
+            prompt = tok.apply_chat_template([{"role": "user", "content": ask}],
                                              tokenize=False, add_generation_prompt=True)
             def run(audio):
                 with torch.inference_mode():
