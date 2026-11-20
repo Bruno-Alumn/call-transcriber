@@ -218,6 +218,16 @@ select:focus, input:focus { border-color: var(--accent); }
 .line.bg .who { opacity: .6; }
 .bgtag { font-size: 10.5px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; margin-left: 6px; white-space: nowrap; vertical-align: 1px; }
 @keyframes flash { from { background: color-mix(in srgb, var(--accent) 16%, transparent); } to { background: transparent; } }
+/* questions and answers */
+.feed { position: relative; }
+.qa { font: inherit; font-size: 11px; line-height: 16px; border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; margin-left: 6px; white-space: nowrap; vertical-align: 1px; background: none; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 4px; }
+button.qa { cursor: pointer; }
+button.qa:hover { background: var(--surface-2); color: var(--text-primary); }
+.qa .swatch { width: 7px; height: 7px; }
+.qa.none, .qa.wait { color: var(--text-muted); border-style: dashed; }
+.line.qa-on { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.qa-link { position: absolute; left: 1px; width: 6px; border: 2px solid; border-right: 0; border-radius: 4px 0 0 4px; pointer-events: none; opacity: .8; }
+.line.go { animation: flash 1.6s ease-out; }
 mark { background: color-mix(in srgb, var(--warn) 35%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
 .empty { color: var(--text-muted); text-align: center; padding: 40px 10px; }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); animation: pulse 1.6s infinite; }
@@ -447,7 +457,7 @@ select, input[type=search] { border-radius: var(--radius); }
 /* transcript: monospaced timestamps, quieter hover */
 .line { border-radius: 4px; }
 .line .time { font-family: var(--mono); font-size: 11.5px; }
-.line .who { font-weight: 600; }
+.line .who { font-weight: 600; border: 1px solid var(--border); border-radius: 4px; padding: 0 6px 0 5px; line-height: 18px; vertical-align: 1px; }
 .swatch { border-radius: 2px; }
 .live-dot { width: 7px; height: 7px; border-radius: 1.5px; }
 /* who's in the call: flat tags */
@@ -670,19 +680,102 @@ function renderFeed(onlyAppend = false) {
   if (!onlyAppend) feed.innerHTML = '';
   const html = [];
   const slice = vis.slice(Math.max(0, start, vis.length - 1500));   // keep the DOM light on long days
+  lineIdx = new Map(lines.map((r, i) => [r, i]));
   let prev = start > 0 ? vis[start - 1] : null;
   for (const r of slice) {
     const k = keyOf.get(r);
     const cont = prev && keyOf.get(prev) === k && r.t - prev.end < 15000;
     const dimBg = r.bg && bgMode() === 'dim';
-    html.push(`<div class="line${cont ? ' cont' : ''}${onlyAppend ? ' new' : ''}${dimBg ? ' bg' : ''}" data-t="${r.t}"><div class="time">${fmtTime(r.t)}</div><div>${cont ? '' : `<span class="who" data-k="${esc(k)}" title="Right-click for a personality read"><span class="swatch" style="background:${colorFor(k)}"></span>${esc(nameFor(k))}</span>`}<span class="text">${highlight(r.text)}</span>${dimBg ? '<span class="bgtag" title="Did not sound like this person: a video or someone else near their mic">background</span>' : ''}${lineExtras(r)}</div></div>`);
+    html.push(`<div class="line${cont ? ' cont' : ''}${onlyAppend ? ' new' : ''}${dimBg ? ' bg' : ''}" data-t="${r.t}" data-li="${lineIdx.get(r)}"><div class="time">${fmtTime(r.t)}</div><div>${cont ? '' : `<span class="who" data-k="${esc(k)}" title="Right-click for a personality read"><span class="swatch" style="background:${colorFor(k)}"></span>${esc(nameFor(k))}</span>`}<span class="text">${highlight(r.text)}</span>${dimBg ? '<span class="bgtag" title="Did not sound like this person: a video or someone else near their mic">background</span>' : ''}<span class="qa-slot"></span>${lineExtras(r)}</div></div>`);
     prev = r;
   }
   feed.insertAdjacentHTML('beforeend', html.join(''));
   lastRenderedCount = vis.length;
+  paintQA();
   if (!onlyAppend || nearBottom) feed.scrollTop = feed.scrollHeight;
   else $('#jump').style.display = 'block';
 }
+// ------------------------------------------------------------ questions and answers
+// A line whose last sentence ends in "?" is a question. Its answer is the next
+// line by someone else within 20 s of it. A question that names someone ("Theo,
+// can you...") takes that person's reply first. Each line answers at most
+// one question (the latest open one), and a quick follow-up question by the same
+// person replaces the one before it. Questions nobody answered say so.
+const QA_WINDOW = 20000;
+const TAG_Q = /^(right|yeah|yes|no|huh|what|really|ok|okay|wait|sorry|eh|hm+|you know|isn't it|is it)\?$/i;
+let lineIdx = new Map(), qa = { q: new Map(), a: new Map() };
+function questionIn(text) {
+  const m = String(text).trim().match(/([^.!?]*\?)["')\s]*$/);
+  if (!m) return null;
+  const q = m[1].trim();
+  return q.split(/\s+/).length < 2 || TAG_Q.test(q) ? null : q;
+}
+function qaLinks() {
+  const q = new Map(), a = new Map(), open = [];
+  const people = [...new Set(lines.map((r) => keyOf.get(r)))].map((k) => [k, (nameFor(k).match(/[\p{L}\p{N}]{3,}/u) || [''])[0].toLowerCase()]).filter(([, n]) => n);
+  const addressee = (text, asker) => { const t = text.toLowerCase(); for (const [k, n] of people) if (k !== asker && new RegExp(`(^|[^\\p{L}\\p{N}])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^\\p{L}\\p{N}]|$)`, 'u').test(t)) return k; return null; };
+  for (const r of lines) {
+    if (r.bg) continue;
+    const k = keyOf.get(r);
+    for (let i = open.length - 1; i >= 0; i--) if (r.t - open[i].r.end > QA_WINDOW) { q.set(open[i].r, null); open.splice(i, 1); }
+    const cands = open.filter((o) => o.k !== k && r.t > o.r.t + 300);
+    const o = cands.filter((c) => c.to === k).pop() || cands.filter((c) => !c.to).pop() || cands.pop();   // someone else may answer for the person named
+    if (o) { q.set(o.r, r); a.set(r, o.r); open.splice(open.indexOf(o), 1); }
+    const text = questionIn(r.text);
+    if (text) {
+      const prev = open.findLastIndex((c) => c.k === k);
+      if (prev >= 0 && r.t - open[prev].r.end < 8000) { q.delete(open[prev].r); open.splice(prev, 1); }
+      open.push({ r, k, to: addressee(text, k) });
+    }
+  }
+  const waiting = isToday();
+  for (const o of open) q.set(o.r, waiting && Date.now() - o.r.end < QA_WINDOW ? 'wait' : null);
+  return { q, a };
+}
+function paintQA() {
+  const feed = $('#feed'); if (!feed) return;
+  qa = qaLinks();
+  const who = (r) => { const k = keyOf.get(r); return `<span class="swatch" style="background:${colorFor(k)}"></span>${esc(nameFor(k))}`; };
+  feed.querySelectorAll('.line[data-li]').forEach((el) => {
+    const r = lines[+el.dataset.li], slot = el.querySelector('.qa-slot'); if (!r || !slot) return;
+    let h = '';
+    if (qa.a.has(r)) h += `<button class="qa" data-go="${lineIdx.get(qa.a.get(r))}" title="Go to the question this answers">answers ${who(qa.a.get(r))}</button>`;
+    if (qa.q.has(r)) {
+      const ans = qa.q.get(r);
+      h += ans === 'wait' ? '<span class="qa wait" title="Asked in the last 20 seconds">waiting for an answer</span>'
+        : ans ? `<button class="qa" data-go="${lineIdx.get(ans)}" title="Go to the answer">answered by ${who(ans)}</button>`
+        : '<span class="qa none" title="Nobody else spoke within 20 seconds">no answer</span>';
+    }
+    if (slot.innerHTML !== h) slot.innerHTML = h;
+  });
+}
+// the partner line of a question or answer, if it has one
+const qaPartner = (r) => { const x = qa.q.get(r); return x && x !== 'wait' ? x : qa.a.get(r) || null; };
+function lineEl(i) { return $('#feed').querySelector(`.line[data-li="${i}"]`); }
+function showLink(el) {
+  hideLink();
+  const r = lines[+el?.dataset.li], p = r && qaPartner(r); if (!p) return;
+  const other = lineEl(lineIdx.get(p)); if (!other) return;
+  const [top, bot] = r.t < p.t ? [el, other] : [other, el];
+  const qLine = qa.q.has(r) ? r : p;
+  el.classList.add('qa-on'); other.classList.add('qa-on');
+  const d = document.createElement('div'); d.className = 'qa-link';
+  d.style.top = top.offsetTop + 10 + 'px'; d.style.height = Math.max(4, bot.offsetTop - top.offsetTop) + 'px';
+  d.style.borderColor = colorFor(keyOf.get(qLine));
+  $('#feed').appendChild(d);
+}
+function hideLink() { const f = $('#feed'); f.querySelectorAll('.qa-on').forEach((x) => x.classList.remove('qa-on')); f.querySelectorAll('.qa-link').forEach((x) => x.remove()); }
+$('#feed').addEventListener('mouseover', (e) => { const el = e.target.closest('.line[data-li]'); if (el !== $('#feed').__hov) { $('#feed').__hov = el; el ? showLink(el) : hideLink(); } });
+$('#feed').addEventListener('mouseleave', () => { $('#feed').__hov = null; hideLink(); });
+$('#feed').addEventListener('click', (e) => {
+  const b = e.target.closest('button.qa[data-go]'); if (!b) return;
+  let el = lineEl(b.dataset.go);
+  if (!el && (filter || query)) { filter = null; query = ''; const q = $('#q'); if (q) q.value = ''; renderAll(); el = lineEl(b.dataset.go); }
+  if (!el) return;
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  el.classList.remove('go'); void el.offsetWidth; el.classList.add('go');
+});
+setInterval(() => { if (isToday() && $('#feed .qa.wait')) paintQA(); }, 5000);
 $('#feed').addEventListener('scroll', (e) => { const f = e.target; if (f.scrollHeight - f.scrollTop - f.clientHeight < 80) $('#jump').style.display = 'none'; });
 $('#jump').onclick = () => { const f = $('#feed'); f.scrollTop = f.scrollHeight; $('#jump').style.display = 'none'; };
 
@@ -897,6 +990,21 @@ function renderTimeline(s) {
     const yy = 2 + i * lane + 2;
     const x0 = Math.max(padL, x(r.t)), x1 = Math.max(x0 + 3, x(r.end));
     out += `<rect class="u" data-i="${idx}" x="${x0}" y="${yy}" width="${x1 - x0}" height="12" rx="4" fill="${colorFor(keyOf.get(r))}" ${filter && filter !== keyOf.get(r) ? 'opacity=".25"' : ''}/>`;
+  });
+  // questions: a curve from each question to its answer; a hollow mark on ones nobody answered
+  qa = qaLinks();
+  const laneY = (r) => 2 + keys.indexOf(keyOf.get(r)) * lane + 8;
+  const shown = new Set(recent);
+  recent.forEach((r) => {
+    if (!qa.q.has(r)) return;
+    const ans = qa.q.get(r), qx = Math.min(W - 4, Math.max(padL, x(r.end))), qy = laneY(r);
+    const dim = filter && filter !== keyOf.get(r) && !(ans && ans !== 'wait' && filter === keyOf.get(ans));
+    if (ans && ans !== 'wait' && shown.has(ans)) {
+      const ax = Math.max(padL, x(ans.t)), ay = laneY(ans), mx = (qx + ax) / 2;
+      out += `<path class="qa-arc" d="M${qx} ${qy} C${mx} ${qy}, ${mx} ${ay}, ${ax} ${ay}" fill="none" stroke="${colorFor(keyOf.get(r))}" stroke-width="1.5" stroke-dasharray="3 2" opacity="${dim ? .2 : .75}"><title>${esc(nameFor(keyOf.get(r)))} asked, ${esc(nameFor(keyOf.get(ans)))} answered</title></path>`;
+    } else if (ans === null) {
+      out += `<circle cx="${qx + 5}" cy="${qy}" r="3.5" fill="var(--surface-1)" stroke="${colorFor(keyOf.get(r))}" stroke-width="1.5" opacity="${dim ? .25 : 1}"><title>No answer: ${esc(questionIn(r.text))}</title></circle>`;
+    }
   });
   if (!tv) {
     const step = W - padL < 260 ? 5 : 2;      // fewer labels when narrow, so they never overlap
