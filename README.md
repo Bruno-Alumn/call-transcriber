@@ -57,7 +57,7 @@ dashboard next to the call, and no audio ever leaves your machine.
 
 **On your computer only**
 
-- Five local speech models, from 5.4% to 13% of words wrong on real meeting audio, all faster than real time.
+- Two local speech models: Granite 470M transcribes live, and Granite 2B can rewrite each line a few seconds later for the best accuracy.
 - Updates itself from new releases.
 
 ## Install
@@ -125,8 +125,8 @@ and undeafen it; it stays muted, because listener accounts have no microphone.
 <details>
 <summary><strong>Lines show up several seconds late</strong></summary>
 
-The model is falling behind. Pick a faster one from the model button at the
-top of the dashboard: Granite Speech 470M is the default and the fastest.
+The model is falling behind. If Granite 2B is the only model on, turn 470M
+back on from the model button at the top of the dashboard: it is much faster.
 **Server › Show Server Log** shows what the server is doing.
 </details>
 
@@ -204,17 +204,20 @@ ones you trust.
 <summary><strong>Speech models</strong></summary>
 <br>
 
-Word error rate on 120 real meeting clips (AMI), measured on the maintainer's machines.
+Pick them with the model button at the top of the dashboard. Either can be on
+alone, and turning both on makes 2B rewrite each line a few seconds after
+470M writes it. Word error rate is on 120 real meeting clips (AMI), measured
+on the maintainer's machines.
 
 | Model | Words wrong | Speed (Mac / PC with NVIDIA) |
 |:--|:--|:--|
 | **Granite Speech 5.0 470M** (default) | 5.5% | 249× / 82× real time |
-| Granite Speech 5.0 2B | 5.4% | 13× / 11×, needs about 9 GB |
-| Parakeet TDT 0.6B v3 | 7.0% | 116× / 30× on the CPU, 25 European languages |
-| Qwen3-ASR 1.7B | 8.5% | 18× / 10×, 52 languages |
-| Whisper large-v3-turbo | 13% | 15× / 30×, 99 languages |
+| Granite Speech 5.0 2B | 5.4% | 13× / 11× real time, about 9 GB of memory |
 
-Personality reads use Liquid AI LFM3 1.7B and need Apple Silicon or an NVIDIA GPU.
+On a PC without an NVIDIA graphics card Granite can't keep up, so Earshot uses
+Parakeet TDT 0.6B v3 on the processor instead (7.4% words wrong, about 30×
+real time). Personality reads use Liquid AI LFM3 1.7B and need Apple Silicon
+or an NVIDIA GPU.
 </details>
 
 <details>

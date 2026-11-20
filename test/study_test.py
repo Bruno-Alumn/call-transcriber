@@ -455,6 +455,141 @@ def main() -> int:
                 users |= {v for v in r.values() if v in expected or v == EXCLUDED[0]}
         return users <= expected and len(users) >= 5, f"{len(users)} people"
 
+    # -- checks added with the review fixes --------------------------------------
+    @check("split-half keeps every call whole (all its speakers in the same half)")
+    def _():
+        traits = mod("traits")
+        # Everyone attends every synthetic call, so drop one person from the first
+        # call: with per-person parity their later calls would then flip halves.
+        first_call = pipe["lines"][0].call
+        quiet = PEOPLE["quiet"][0]
+        lines = [ln for ln in pipe["lines"] if not (ln.call == first_call and ln.user == quiet)]
+        halves = []
+
+        def spy(subset):
+            halves.append({ln.call for ln in subset})
+            return score_lines(subset, pipe["labels"])
+
+        traits.split_half(spy, lines)
+        if len(halves) != 2:
+            return False, f"score_fn called {len(halves)} times"
+        both = halves[0] & halves[1]
+        return not both, f"{len(both)} calls split across halves" if both else f"{len(halves[0])}+{len(halves[1])} calls"
+
+    @check("social-only: turn-taking rates use one line set for numerator and denominator")
+    def _():
+        features = mod("features")
+        lines, labels = pipe["lines"], pipe["labels"]
+        full = features.features_for(lines, labels)
+        soc = features.features_for(lines, labels, social=True)
+        bad = []
+        for u, f in soc.items():
+            for k in ("replies_given_per_100_lines", "interrupts_per_100_lines"):
+                a, b = f[k], full[u][k]
+                if not (math.isclose(a, b, rel_tol=1e-9) or (math.isnan(a) and math.isnan(b))):
+                    bad.append(f"{u[-3:]}:{k[:7]} {a:.0f} vs {b:.0f}")
+        return not bad, "; ".join(bad[:4]) or f"{len(soc)} people consistent"
+
+    @check("exclusion file with BOM / UTF-16 still excludes; malformed ids are refused")
+    def _():
+        data = mod("data")
+        p1 = tmp / "ex_bom.txt"; p1.write_bytes(b"\xef\xbb\xbf" + EXCLUDED[0].encode() + b"\r\n")
+        p2 = tmp / "ex_u16.txt"; p2.write_bytes((EXCLUDED[0] + "\r\n").encode("utf-16"))
+        p3 = tmp / "ex_mention.txt"; p3.write_text(f"<@!{EXCLUDED[0]}>  # a pasted mention\n", encoding="utf-8")
+        bad = [p.name for p in (p1, p2, p3) if data.load_exclude(p) != {EXCLUDED[0]}]
+        p4 = tmp / "ex_bad.txt"; p4.write_text(f"{EXCLUDED[0]},\nnot-an-id\n", encoding="utf-8")
+        try:
+            data.load_exclude(p4)
+            bad.append("malformed entry accepted")
+        except ValueError:
+            pass
+        return not bad, ", ".join(bad)
+
+    @check("late exclusion also scrubs an earlier sample.csv (rows and 'previous' text)")
+    def _():
+        o = tmp / "out_late"
+        common = ["--guild", GUILD, "--transcripts", str(tdir), "--out", str(o)]
+        r1 = run_cli("run", *common, "--engine", "fake", "--min-words", "10", "--boot", "5")
+        r2 = run_cli("sample", *common, "--n", "500")
+        before = (o / "sample.csv").read_text(encoding="utf-8-sig") if (o / "sample.csv").exists() else ""
+        r3 = run_cli("run", *common, "--exclude", str(excl_file), "--engine", "fake", "--min-words", "10",
+                     "--boot", "5")
+        txt = (o / "sample.csv").read_text(encoding="utf-8-sig") if (o / "sample.csv").exists() else ""
+        if any(r.returncode for r in (r1, r2, r3)):
+            return False, f"exits {r1.returncode}/{r2.returncode}/{r3.returncode}: {r3.stderr.strip()[-300:]}"
+        if EXCLUDED_MARKER not in before:
+            return False, "test setup: marker not in the first sample"
+        leaked = [k for k in excluded_keys if k in txt]
+        problems = []
+        if EXCLUDED_MARKER in txt:
+            problems.append("excluded text still in sample.csv")
+        if leaked:
+            problems.append(f"{len(leaked)} excluded keys still in sample.csv")
+        if not txt:
+            problems.append("sample.csv was removed instead of rewritten")
+        return not problems, "; ".join(problems)
+
+    @check("label parsing maps near-synonyms; mlx schema constrains every key to its list")
+    def _():
+        labels = mod("labels")
+        problems = []
+        for raw, key, want in (("command", "act", "request"), ("instruction", "act", "request"),
+                               ("disappointment", "emotion", "sadness"), ("frustration", "emotion", "anger"),
+                               ("nervous", "emotion", "fear")):
+            got = labels._clean_value(raw, labels.LABELS[key])
+            if got != want:
+                problems.append(f"{raw}->{got}")
+        schema = labels.label_schema()
+        props = schema.get("properties", {})
+        if set(schema.get("required", [])) != set(labels.LABELS) or schema.get("additionalProperties") is not False:
+            problems.append("schema keys")
+        if any(props.get(k, {}).get("enum") != v for k, v in labels.LABELS.items()):
+            problems.append("schema enums")
+        # The derailed answer from the review must now parse.
+        ans = '{"sentiment": "neutral", "act": "command", "emotion": "none", "tone": "neutral", "context": "gameplay"}'
+        if labels.parse_answer(ans) is None:
+            problems.append("synonym answer not parsed")
+        return not problems, "; ".join(problems)
+
+    @check("bootstrap keeps calls whole; few-call people get no interval; segments are one reply")
+    def _():
+        data, traits = mod("data"), mod("traits")
+        lines, labels = pipe["lines"], pipe["labels"]
+        problems = []
+        # Cluster bootstrap: every replicate call holds all of its original speakers.
+        speakers = {}
+        for ln in lines:
+            speakers.setdefault(ln.call, set()).add(ln.user)
+        by_user_call = {}
+        for ln in lines:
+            by_user_call.setdefault(ln.user, {}).setdefault(ln.call, []).append(ln)
+        broken = []
+
+        def spy(subset):
+            seen = {}
+            for ln in subset:
+                seen.setdefault(ln.call, set()).add(ln.user)
+            broken.extend(c for c, us in seen.items() if us != speakers[c.split("#b")[0]])
+            return score_lines(subset, labels)
+
+        cis = traits.bootstrap_ci(by_user_call, spy, n=5, seed=1)
+        if broken:
+            problems.append(f"{len(broken)} replicate calls lost speakers")
+        if not all(math.isfinite(cis[u]["agreeableness"][0]) for u in cis):
+            problems.append("6-call people should get finite intervals")
+        few = traits.bootstrap_ci(by_user_call, spy, n=3, seed=1, min_calls=7)
+        if any(math.isfinite(v[0]) for d in few.values() for v in d.values()):
+            problems.append("people below min_calls got an interval")
+        # Two Whisper segments of one turn by B are one reply, not two.
+        def L(t, end, user):
+            return data.Line(t=t, end=end, user=user, speaker=user, text="a b c", ch="c", ch_name="c",
+                             guild="g", guild_name="G")
+        seg = [L(0, 2000, "A"), L(2500, 3500, "B"), L(3600, 4500, "B")]
+        data.group_calls(seg)
+        if data.replies(seg) != [("B", "A", 500)]:
+            problems.append(f"segmented turn -> {data.replies(seg)}")
+        return not problems, "; ".join(problems)
+
     failed = [n for n, ok, _ in RESULTS if not ok]
     print(f"\n{len(RESULTS) - len(failed)}/{len(RESULTS)} checks passed; output kept in {tmp}")
     return 1 if failed else 0

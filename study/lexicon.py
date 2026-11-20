@@ -49,12 +49,12 @@ frick fricking freaking frickin freakin heck wtf stfu lmfao omfg
 POSITIVE = frozenset("""
 good great nice awesome amazing love loved loving lovely liked best
 better happy glad fun funny cool sweet perfect beautiful excellent fantastic
-wonderful brilliant enjoy enjoyed enjoying excited exciting yay yes yeah
-thanks thank appreciate appreciated cute pretty fine okay ok wow haha hahaha
+wonderful brilliant enjoy enjoyed enjoying excited exciting yay
+thanks thank appreciate appreciated cute pretty wow haha hahaha
 lol lmao laugh laughing laughed win won winning winner gg wp clutch smooth
 easy clean solid insane sick dope fire lit epic legend legendary goat proud
 pleased delighted cheers welcome congrats congratulations hope hopefully
-kind friendly helpful agree correct right true safe comfortable relaxed
+kind friendly helpful safe comfortable relaxed
 calm peaceful favorite favourite yum delicious fresh lucky impressive
 incredible hype hyped stoked chill blessed free interesting adorable
 """.split())
@@ -67,8 +67,8 @@ problem problems trouble ugly gross disgusting boring bored tired sick
 hurt hurts hurting pain painful cringe trash garbage useless pointless
 worried worry scared afraid fear nervous stress stressed stressful awkward
 weird lame cheap unfair rude mean nasty toxic depressing depressed lonely
-miss missed missing sorry regret ugh damn bruh crap shit hell kill killed
-dead die died dying hard difficult impossible confused confusing frustrated
+miss missed missing sorry regret ugh damn bruh crap shit hell
+hard difficult impossible confused confusing frustrated
 frustrating disappointed disappointing jealous guilty ashamed embarrassed
 miserable pathetic ridiculous nonsense dangerous risky laggy lag lagging
 """.split())
@@ -76,8 +76,7 @@ miserable pathetic ridiculous nonsense dangerous risky laggy lag lagging
 ANGER = frozenset("""
 angry anger mad furious rage raging pissed annoyed annoying irritated
 irritating hate hated hating hates fuming outraged livid frustrated
-frustrating frustration kill killing murder destroy destroyed smash fight
-fighting fought attack attacked yell yelling scream screaming shout
+frustrating frustration yell yelling scream screaming shout
 shouting argue arguing argument hostile aggressive violent idiot idiots
 stupid moron morons shut shutup stfu toxic jerk bully insult insulted
 offended offensive cheating cheater cheaters rigged unfair bullshit
@@ -100,7 +99,7 @@ miss missed missing cry crying cried tears tear hurt hurts hurting heartbroken
 grief grieve grieving mourn loss lost lose losing sorry regret regrets
 miserable misery gloomy hopeless helpless disappointed disappointing
 disappointment down low empty tired exhausted broken upset pain painful
-suffer suffering sigh rip unfortunately unlucky dead died death funeral
+suffer suffering sigh rip unfortunately unlucky funeral
 gone abandoned rejected ignored worthless
 """.split())
 
@@ -155,8 +154,28 @@ strategy focus lead leading leader carry carried clutch perfect score
 """.split())
 
 FILLERS = frozenset("""
-um umm uh uhh uhm er erm hmm mm like basically literally actually
+um umm uh uhh uhm er erm hmm mm basically literally actually
 """.split()) | {"you know", "i mean", "kind of", "sort of"}
+
+# --- Assent / backchannel ----------------------------------------------------
+# Kept separate from POSITIVE, as LIWC keeps "assent" apart from "posemo": in
+# voice chat these are mostly backchannels ("yeah", "ok", "right") that say
+# "I'm listening", not positive feeling. Counting them as positive made
+# pos_rate measure how often someone says "yeah".
+ASSENT = frozenset("""
+yes yeah yea yep yup ya ok okay k kk alright aight right true fine sure
+agreed agree correct exactly totally mhm mm-hmm uh-huh
+""".split())
+
+# --- Gameplay stoplist ---------------------------------------------------------
+# Words that are routine game vocabulary in voice chat ("he killed me", "I'm
+# dead", "attack the base") and were removed from NEGATIVE / ANGER / SADNESS
+# so emotion rates are not driven by what game is being played. Listed here
+# for reference; --social-only is the stronger way to keep game talk out.
+GAMEPLAY_STOPLIST = frozenset("""
+kill kills killed killing murder destroy destroyed smash fight fighting fought
+attack attacked dead die died dying death
+""".split())
 
 # Category name -> word set. The order here is the order of `counts` output.
 CATEGORIES: dict[str, frozenset] = {
@@ -174,6 +193,7 @@ CATEGORIES: dict[str, frozenset] = {
     "social": SOCIAL,
     "achieve": ACHIEVE,
     "fillers": FILLERS,
+    "assent": ASSENT,
 }
 
 # Extra names accepted when looking up a count (constant names, feature-name
@@ -183,7 +203,8 @@ for _name, _const in [("i", "I_WORDS"), ("we", "WE_WORDS"), ("you", "YOU_WORDS")
                       ("swear", "SWEAR"), ("positive", "POSITIVE"), ("negative", "NEGATIVE"),
                       ("anger", "ANGER"), ("anxiety", "ANXIETY"), ("sadness", "SADNESS"),
                       ("tentative", "TENTATIVE"), ("certainty", "CERTAINTY"),
-                      ("social", "SOCIAL"), ("achieve", "ACHIEVE"), ("fillers", "FILLERS")]:
+                      ("social", "SOCIAL"), ("achieve", "ACHIEVE"), ("fillers", "FILLERS"),
+                      ("assent", "ASSENT")]:
     _ALIASES[_const] = _name
     _ALIASES[_const.lower()] = _name
 _ALIASES.update({"pos": "positive", "neg": "negative", "filler": "fillers",
@@ -242,8 +263,9 @@ _PHRASES: dict[str, list[tuple[str, ...]]] = {
 def counts(tokens: list[str]) -> dict[str, int]:
     """Per-category counts for a token list (as returned by `tokenize`).
 
-    Single words count once per occurrence ("like" counts as a filler only;
-    it is deliberately absent from POSITIVE). Multi-word entries count once per
+    Single words count once per occurrence. Bare "like" is in no category
+    (it is mostly a verb or preposition, and as a filler it cannot be told
+    apart by word alone); assent words ("yeah", "ok") count only as assent. Multi-word entries count once per
     occurrence of the whole phrase (so "you know" adds 1 to fillers; its
     "you" is still also counted in the "you" category).
     """

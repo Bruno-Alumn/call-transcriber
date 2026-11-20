@@ -97,9 +97,11 @@ PRIOR_WEIGHTS: dict[str, dict[str, float]] = {
     },
     "extraversion": {
         # M06: amount of talking in daily life is the strongest spoken
-        # correlate of extraversion (r around .3). We use the share of talk
-        # within the calls a person was in, which removes data volume.
-        "talk_share": 0.20,
+        # correlate of extraversion (r around .3). We use the person's share of
+        # talk relative to an equal share among the people in each call
+        # (talk_share_rel), which removes data volume AND call size; the raw
+        # share would make people who hang out in small calls look extraverted.
+        "talk_share_rel": 0.20,
         # Y10, PK99: more social-process words.
         "social_rate": 0.15,
         # PK99, Y10: more positive emotion words.
@@ -287,39 +289,59 @@ def _shifted_copy(line, k: int):
     return dataclasses.replace(line, **changes)
 
 
+# A bootstrap interval needs this many distinct calls for the person: with
+# fewer, resampling calls cannot show how much their behaviour varies from
+# call to call, and the interval comes out falsely narrow (one call can only
+# ever be drawn as itself). Below it the interval is (nan, nan).
+MIN_CI_CALLS = 5
+
+
 def bootstrap_ci(lines_by_user_call: dict[str, dict[str, list]],
                  compute: Callable[[list], dict[str, dict[str, float]]],
-                 n: int = 200, seed: int = 0) -> dict[str, dict[str, tuple[float, float]]]:
+                 n: int = 200, seed: int = 0,
+                 min_calls: int = MIN_CI_CALLS) -> dict[str, dict[str, tuple[float, float]]]:
     """Per-user, per-trait 95% percentile intervals by resampling calls.
 
     lines_by_user_call: user -> call id -> that user's lines in that call.
-    In each of `n` replicates every user's calls are drawn with replacement
-    (as many draws as the user has calls); the drawn lines of all users are
-    pooled, sorted by time, and passed to `compute`. A call drawn more than
-    once is time-shifted for each extra copy (see _shifted_copy). When two
-    users both drew the same call the same number of times, their copies line
-    up, so their interactions are preserved.
+    Pass EVERY speaker's lines (not only the people you want intervals for):
+    the scores are relative and interaction features need the other side.
+
+    Cluster bootstrap over calls: in each of `n` replicates the server's calls
+    (the union over users) are drawn with replacement, as many draws as there
+    are calls, and every user's lines from each drawn call are kept, so people
+    keep their real conversation partners. A call drawn more than once is
+    time-shifted for each extra copy (see _shifted_copy). The pooled lines,
+    sorted by time, are passed to `compute`. A user who was in none of the
+    drawn calls simply has no value for that replicate.
+
+    (Resampling each user's calls independently, as an earlier version did,
+    broke shared calls apart: most replicate calls lost some participants,
+    which inflated talk share by ~80% and halved reply rates.)
 
     Because scores are relative to the server, the interval reflects both the
     user's own sampling noise and that of everyone else. Deterministic with
-    `seed`. Users missing from a replicate's output are ignored for it; a
-    user/trait with no finite replicate gets (nan, nan).
+    `seed`. Users with fewer than `min_calls` distinct calls, and user/trait
+    pairs with no finite replicate, get (nan, nan).
     """
     rng = np.random.default_rng(seed)
     users = sorted(u for u, calls in lines_by_user_call.items() if calls)
+    call_ids = sorted({c for u in users for c in lines_by_user_call[u]})
+    # call id -> every user's lines in that call
+    by_call: dict[str, list] = {c: [] for c in call_ids}
+    for u in users:
+        for c, lns in lines_by_user_call[u].items():
+            by_call[c].extend(lns)
     draws: dict[str, dict[str, list[float]]] = {u: {} for u in users}
 
-    for _ in range(max(int(n), 0)):
+    for _ in range(max(int(n), 0) if call_ids else 0):
+        picks = rng.integers(0, len(call_ids), size=len(call_ids))
+        seen: dict[str, int] = {}
         subset = []
-        for u in users:
-            call_ids = sorted(lines_by_user_call[u])
-            picks = rng.integers(0, len(call_ids), size=len(call_ids))
-            seen: dict[str, int] = {}
-            for p in picks:
-                cid = call_ids[int(p)]
-                k = seen.get(cid, 0)
-                seen[cid] = k + 1
-                subset.extend(_shifted_copy(ln, k) for ln in lines_by_user_call[u][cid])
+        for p in picks:
+            cid = call_ids[int(p)]
+            k = seen.get(cid, 0)
+            seen[cid] = k + 1
+            subset.extend(_shifted_copy(ln, k) for ln in by_call[cid])
         subset.sort(key=lambda ln: (getattr(ln, "t", 0), getattr(ln, "idx", 0)))
         scores = compute(subset) or {}
         for u in users:
@@ -329,10 +351,11 @@ def bootstrap_ci(lines_by_user_call: dict[str, dict[str, list]],
     out: dict[str, dict[str, tuple[float, float]]] = {}
     for u in users:
         out[u] = {}
+        enough = len(lines_by_user_call[u]) >= min_calls
         for trait in sorted(set(TRAITS) | set(draws[u])):
             vals = np.array(draws[u].get(trait, []), dtype=float)
             vals = vals[np.isfinite(vals)]
-            if vals.size == 0:
+            if vals.size == 0 or not enough:
                 out[u][trait] = (math.nan, math.nan)
             else:
                 lo, hi = np.percentile(vals, [2.5, 97.5])
@@ -344,20 +367,30 @@ def bootstrap_ci(lines_by_user_call: dict[str, dict[str, list]],
 # Split-half reliability
 # ---------------------------------------------------------------------------
 
-def split_half(score_fn: Callable[[list], dict[str, dict[str, float]]], lines: list) -> dict[str, float]:
+def split_half(score_fn: Callable[[list], dict[str, dict[str, float]]], lines: list,
+               info: dict | None = None) -> dict[str, float]:
     """Odd/even-call split-half reliability per trait, Spearman-Brown corrected.
 
-    For each user, their calls are ordered by call start time (the earliest
-    line of the call, across everyone) and alternately assigned to half A
-    (1st, 3rd, ...) and half B (2nd, 4th, ...). Half A holds each user's own
-    lines from their A calls, likewise for B, so no line is in both halves.
-    (A shared call can be in A for one user and in B for another; then
-    interaction features in that call lose the other side. This lowers
-    reliability slightly for interaction features, a conservative bias.)
+    All calls of the server are ordered by start time (the earliest line of
+    the call) and WHOLE calls are assigned alternately to half A (1st, 3rd,
+    ...) and half B (2nd, 4th, ...), so every speaker in a call lands in the
+    same half and interactions stay intact. Pass every speaker's lines; users
+    whose calls all fall in one half drop out of the comparison.
+
+    (An earlier version gave each user their own odd/even call order. A shared
+    call could then be in A for one person and in B for the others, which made
+    occasional attenders look alone in the call in a way that repeats in both
+    halves: spurious "reliability" that measured attendance patterns.)
 
     score_fn is applied to each half; the per-trait Pearson r across users
     present in both halves is corrected to full length with 2r / (1 + r).
-    NaN when fewer than 5 users have finite scores in both halves.
+    When r <= 0 the uncorrected r is returned instead: the correction is
+    only meaningful for positive r (for r = -0.6 it would give -3.0), and a
+    value <= 0 means "no consistency" either way. NaN when fewer than 5 users
+    have finite scores in both halves.
+
+    info: optional dict; filled with {"n_users": users compared,
+    "n_calls": (calls in A, calls in B)}.
 
     Lines without a call id are grouped first with study.data.group_calls,
     which sets `call` on those line objects.
@@ -371,17 +404,10 @@ def split_half(score_fn: Callable[[list], dict[str, dict[str, float]]], lines: l
         cs = call_start.get(ln.call)
         if cs is None or ln.t < cs:
             call_start[ln.call] = ln.t
+    order = {c: i for i, c in enumerate(sorted(call_start, key=lambda c: (call_start[c], c)))}
 
-    user_calls: dict[str, set[str]] = {}
-    for ln in lines:
-        user_calls.setdefault(ln.user, set()).add(ln.call)
-    half_of: dict[tuple[str, str], int] = {}
-    for u, calls in user_calls.items():
-        for i, c in enumerate(sorted(calls, key=lambda c: (call_start[c], c))):
-            half_of[(u, c)] = i % 2
-
-    half_a = [ln for ln in lines if half_of[(ln.user, ln.call)] == 0]
-    half_b = [ln for ln in lines if half_of[(ln.user, ln.call)] == 1]
+    half_a = [ln for ln in lines if order[ln.call] % 2 == 0]
+    half_b = [ln for ln in lines if order[ln.call] % 2 == 1]
     sa = score_fn(half_a) or {}
     sb = score_fn(half_b) or {}
 
@@ -394,18 +420,26 @@ def split_half(score_fn: Callable[[list], dict[str, dict[str, float]]], lines: l
 
     common = sorted(set(sa) & set(sb))
     out: dict[str, float] = {}
+    n_used = 0
     for trait in traits:
         a = np.array([_to_float((sa[u] or {}).get(trait)) for u in common], dtype=float)
         b = np.array([_to_float((sb[u] or {}).get(trait)) for u in common], dtype=float)
         ok = np.isfinite(a) & np.isfinite(b)
+        n_used = max(n_used, int(ok.sum()))
         if ok.sum() < 5:
             out[trait] = math.nan
             continue
         r = _pearson(a[ok], b[ok])
-        if not math.isfinite(r) or r <= -1.0:
+        if not math.isfinite(r):
             out[trait] = math.nan
+        elif r <= 0:
+            out[trait] = r          # uncorrected: Spearman-Brown is not meaningful here
         else:
             out[trait] = 2 * r / (1 + r)
+    if info is not None:
+        info["n_users"] = n_used
+        info["n_calls"] = (len({c for c in order if order[c] % 2 == 0}),
+                           len({c for c in order if order[c] % 2 == 1}))
     return out
 
 
@@ -451,8 +485,56 @@ def _ridge(Z: np.ndarray, y: np.ndarray, alpha: float):
     return w, b0
 
 
+# Alpha the CLI uses. With ~10 people and ~30 features the eigenvalues of Z'Z
+# are roughly 8-60, so alpha = 1 barely regularises (close to an interpolator
+# whose leave-one-out r is noise). 50 shrinks the weights substantially; it is
+# a fixed, documented choice, NOT tuned on the LOO r that is then reported
+# (that would inflate it). fit_calibration's own default stays 1.0.
+CLI_ALPHA = 50.0
+
+# Permutations for the chance level of loo_r.
+N_PERM = 200
+
+
+def _loo_folds(Xt: np.ndarray):
+    """Per held-out row: (training mask, standardized training Z, held-out z).
+
+    Standardization does not depend on y, so it is done once and reused for
+    the real answers and for every permutation.
+    """
+    folds = []
+    for i in range(Xt.shape[0]):
+        keep = np.arange(Xt.shape[0]) != i
+        Ztr, mu_tr, sd_tr = _standardize(Xt[keep])
+        zi = (Xt[i] - mu_tr) / sd_tr
+        zi[~np.isfinite(zi)] = 0.0
+        folds.append((keep, Ztr, zi))
+    return folds
+
+
+def _loo_r(folds, y: np.ndarray, alpha: float) -> float:
+    """Pearson r between leave-one-out predictions and y."""
+    preds = np.full(len(y), np.nan)
+    for i, (keep, Ztr, zi) in enumerate(folds):
+        if Ztr.shape[1]:
+            wi, bi = _ridge(Ztr, y[keep], alpha)
+            preds[i] = bi + float(zi @ wi)
+        else:
+            preds[i] = float(y[keep].mean())
+    return _pearson(preds, y)
+
+
+def _fisher_ci(r: float, n: int) -> tuple[float, float]:
+    """95% interval for a correlation via Fisher's z (needs n > 3)."""
+    if not math.isfinite(r) or n <= 3:
+        return (math.nan, math.nan)
+    r = max(min(r, 0.999999), -0.999999)
+    z, se = math.atanh(r), 1.0 / math.sqrt(n - 3)
+    return (math.tanh(z - 1.96 * se), math.tanh(z + 1.96 * se))
+
+
 def fit_calibration(people: dict[str, dict[str, float]], truth: dict[str, dict[str, float]],
-                    feats: list[str], alpha: float = 1.0) -> dict:
+                    feats: list[str], alpha: float = 1.0, n_perm: int = N_PERM, seed: int = 0) -> dict:
     """Ridge regression of questionnaire scores on z-scored features, per trait.
 
     Uses users that appear in both `people` and `truth`; raises ValueError
@@ -465,8 +547,18 @@ def fit_calibration(people: dict[str, dict[str, float]], truth: dict[str, dict[s
     estimate (in-sample r would be inflated, badly so with ~40 features and
     ~10 people).
 
+    Chance level: with ~10 people and ~30 features a LOO r of 0.3-0.6 is
+    common even when the answers have nothing to do with the features. So
+    the same LOO procedure is rerun `n_perm` times with the answers shuffled
+    across people (seeded); "loo_null95" is the 95th percentile of those r
+    values and "loo_p" the share of them >= the real r (with the +1
+    correction). A real r below loo_null95 is indistinguishable from chance.
+    "loo_ci" is a Fisher-z 95% interval for loo_r (rough: LOO predictions
+    are not independent).
+
     Returns {"weights": {trait: {feat: w}}, "intercept": {trait: b0},
-             "loo_r": {trait: r}, "n": n_users,
+             "loo_r": {trait: r}, "loo_null95": {trait: r95}, "loo_p": {trait: p},
+             "loo_ci": {trait: (lo, hi)}, "n": n_users,
              "n_by_trait": {trait: n}, "feature_mean": {feat: m},
              "feature_sd": {feat: sd or None for unused}, "alpha": alpha}.
     Weights apply to features z-scored with feature_mean / feature_sd
@@ -495,7 +587,11 @@ def fit_calibration(people: dict[str, dict[str, float]], truth: dict[str, dict[s
     weights: dict[str, dict[str, float]] = {}
     intercept: dict[str, float] = {}
     loo_r: dict[str, float] = {}
+    loo_null95: dict[str, float] = {}
+    loo_p: dict[str, float] = {}
+    loo_ci: dict[str, tuple[float, float]] = {}
     n_by_trait: dict[str, int] = {}
+    rng = np.random.default_rng(seed)
     for trait in traits:
         y_all = np.array([_to_float((truth[u] or {}).get(trait)) for u in users], dtype=float)
         ok = np.isfinite(y_all)
@@ -504,6 +600,9 @@ def fit_calibration(people: dict[str, dict[str, float]], truth: dict[str, dict[s
             weights[trait] = {f: 0.0 for f in feats}
             intercept[trait] = math.nan
             loo_r[trait] = math.nan
+            loo_null95[trait] = math.nan
+            loo_p[trait] = math.nan
+            loo_ci[trait] = (math.nan, math.nan)
             continue
         Xt, yt = X[ok], y_all[ok]
 
@@ -521,23 +620,27 @@ def fit_calibration(people: dict[str, dict[str, float]], truth: dict[str, dict[s
         intercept[trait] = b0_all
 
         # Leave-one-out predictions, refitting everything without the held-out user.
-        preds = np.full(len(yt), np.nan)
-        for i in range(len(yt)):
-            keep = np.arange(len(yt)) != i
-            Ztr, mu_tr, sd_tr = _standardize(Xt[keep])
-            if Xt.shape[1]:
-                wi, bi = _ridge(Ztr, yt[keep], alpha)
-            else:
-                wi, bi = np.zeros(0), float(yt[keep].mean())
-            zi = (Xt[i] - mu_tr) / sd_tr
-            zi[~np.isfinite(zi)] = 0.0
-            preds[i] = bi + float(zi @ wi)
-        loo_r[trait] = _pearson(preds, yt)
+        folds = _loo_folds(Xt)
+        r_real = _loo_r(folds, yt, alpha)
+        loo_r[trait] = r_real
+        loo_ci[trait] = _fisher_ci(r_real, len(yt))
+        # Permutation null: identical procedure, answers shuffled across people.
+        null = np.array([_loo_r(folds, rng.permutation(yt), alpha) for _ in range(max(int(n_perm), 0))])
+        null = null[np.isfinite(null)]
+        if null.size and math.isfinite(r_real):
+            loo_null95[trait] = float(np.percentile(null, 95))
+            loo_p[trait] = float((1 + (null >= r_real).sum()) / (1 + null.size))
+        else:
+            loo_null95[trait] = math.nan
+            loo_p[trait] = math.nan
 
     return {
         "weights": weights,
         "intercept": intercept,
         "loo_r": loo_r,
+        "loo_null95": loo_null95,
+        "loo_p": loo_p,
+        "loo_ci": loo_ci,
         "n": len(users),
         "n_by_trait": n_by_trait,
         "feature_mean": {f: float(mu_all[j]) for j, f in enumerate(feats)},

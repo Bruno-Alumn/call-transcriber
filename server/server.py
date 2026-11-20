@@ -155,6 +155,11 @@ class Writer:
             return
         base = old[0]
         ids = [r["id"] for r in old]
+        # Deleted (or archived away) since? Then there is nothing to rewrite.
+        days = {dt.datetime.fromtimestamp(r["t"] / 1000).strftime("%Y-%m-%d") for r in old}
+        alive = {r.get("id") for d in days for r in load_day(d)}
+        if not all(i in alive for i in ids):
+            return
         new = []
         for i, (t_ms, end_ms, text) in enumerate(parts):
             rec = {"id": os.urandom(5).hex(), "t": int(t_ms), "end": int(max(end_ms, t_ms + 300)), "user": base["user"],
@@ -162,13 +167,16 @@ class Writer:
             for k in ("ch", "chName", "guild", "guildName"):
                 if k in base:
                     rec[k] = base[k]
-            if i == 0:
-                rec["replaces"] = ids
             new.append(rec)
-        when = dt.datetime.fromtimestamp(new[0]["t"] / 1000)
-        _, jl = self._paths(when)
-        with jl.open("a", encoding="utf-8") as f:
-            for rec in new:
+        # A note in every day file that held an old line (a call can cross
+        # midnight), then each new line in its own day's file.
+        for d in sorted(days):
+            _, jl = self._paths(dt.datetime.strptime(d, "%Y-%m-%d"))
+            with jl.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({"tomb": True, "t": int(min(r["t"] for r in old)), "replaces": ids}) + "\n")
+        for rec in new:
+            _, jl = self._paths(dt.datetime.fromtimestamp(rec["t"] / 1000))
+            with jl.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         with self.lock:
             if all(any(x[6] == i for x in self.pending) for i in ids):      # not in the .md yet: swap them
@@ -247,8 +255,8 @@ def load_day(day: str) -> list[dict]:
             words = max(1, len(text.split()))
             recs.append({"t": t, "end": t + int(words / 2.6 * 1000), "user": "", "speaker": who, "text": text})
     gone = {x for r in recs for x in (r.get("replaces") or [])}   # lines the 2B pass rewrote
-    if gone:
-        recs = [r for r in recs if r.get("id") not in gone]
+    if gone or any(r.get("tomb") for r in recs):
+        recs = [r for r in recs if not r.get("tomb") and r.get("id") not in gone]
     recs.sort(key=lambda r: r["t"])
     return recs
 
@@ -1173,6 +1181,7 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
     import gc
     current, model_run = None, None
     refine_cur, refine_run = None, None
+    loader: dict = {}                    # background load of the rewrite model
     def free_memory(engine):
         gc.collect()
         try:
@@ -1185,9 +1194,22 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
     while True:
         lang = current_settings()["language"] if not language_forced else language
         want = (*hub.want, lang)                          # (id, engine, repo, language)
+        if want != current and refine_cur and want[:3] == refine_cur and refine_run:
+            # Both -> 2B only: the rewrite model is already loaded; make it the live one.
+            model_run, refine_run, refine_cur, hub.refine_id = refine_run, None, None, None
+            hub.refine_q.clear()
+            current = want
+            hub.model_id, hub.engine, hub.model = want[0], want[1], want[2]
+            hub.model_ready, hub.loading, hub.model_error = True, None, None
+            free_memory(hub.engine)
+            print("Model ready (the 2B rewrite model is now live).", flush=True)
         if want != current:
             mid, engine, repo, lang = want
             language = None if lang == "auto" else lang
+            if hub.want_refine is None and refine_run is not None:     # free the rewrite model first
+                refine_run, refine_cur, hub.refine_id = None, None, None
+                hub.refine_q.clear()
+                free_memory(engine)
             hub.model_ready, hub.loading = False, mid
             print(f"Loading {repo} on {engine} (first run downloads it)…", flush=True)
             try:
@@ -1216,25 +1238,47 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
                 pass
             print("Model ready.", flush=True)
         # The 2B rewrite pass: loaded when both models are on, dropped when not.
-        if hub.want_refine != refine_cur:
-            if hub.want_refine is None:
-                refine_run, refine_cur, hub.refine_id = None, None, None
-                hub.refine_q.clear()
-                free_memory(hub.engine)
-            else:
-                rid, reng, rrepo = hub.want_refine
-                hub.refine_loading = rid
-                print(f"Loading {rrepo} for the rewrite pass…", flush=True)
-                try:
-                    refine_run = load_engine(reng, rrepo, language)
-                    refine_run(np.zeros(SR, dtype=np.float32))
-                    refine_cur, hub.refine_id = hub.want_refine, rid
-                    print("Rewrite pass ready.", flush=True)
-                except Exception as e:
-                    print("rewrite model failed:", e, flush=True)
-                    hub.model_error = f"{rid}: {str(e)[:200]}"
-                    hub.want_refine, refine_cur, refine_run = None, None, None
-                hub.refine_loading = None
+        target = hub.want_refine
+        if target != refine_cur:
+            if target is None:
+                if refine_run is not None or refine_cur is not None:
+                    refine_run, refine_cur, hub.refine_id = None, None, None
+                    hub.refine_q.clear()
+                    free_memory(hub.engine)
+            elif loader.get("target") != target:
+                # Load (and on first use download) 2B in the background: live lines keep coming.
+                loader.clear(); loader["target"] = target
+                hub.refine_loading = target[0]
+                def load_refine(tg=target):
+                    try:
+                        print(f"Loading {tg[2]} for the rewrite pass…", flush=True)
+                        if tg[1] == "mlx":
+                            # MLX ties a model to the thread that loads it: only download here
+                            # (the slow part); the transcriber thread loads it, in seconds.
+                            from huggingface_hub import snapshot_download
+                            snapshot_download(tg[2])
+                            loader.update(done=True, run=None, target=tg)
+                        else:
+                            loader.update(done=True, run=load_engine(tg[1], tg[2], language), target=tg)
+                    except Exception as e:
+                        loader.update(done=True, error=f"{tg[0]}: {str(e)[:200]}", target=tg)
+                threading.Thread(target=load_refine, daemon=True).start()
+            elif loader.get("done"):
+                if loader.get("error"):
+                    print("rewrite model failed:", loader["error"], flush=True)
+                    hub.model_error = loader["error"]
+                    hub.want_refine = None
+                else:
+                    try:
+                        run = loader["run"] or load_engine(target[1], target[2], language)
+                        run(np.zeros(SR, dtype=np.float32))                # warm up here, on this thread
+                        refine_run, refine_cur, hub.refine_id = run, target, target[0]
+                        print("Rewrite pass ready.", flush=True)
+                    except Exception as e:
+                        hub.model_error = f"{target[0]}: {str(e)[:200]}"; hub.want_refine = None
+                loader.clear(); hub.refine_loading = None
+        elif loader and loader.get("target") != target:
+            loader.clear(); hub.refine_loading = None      # turned off again while it was loading
         writer.flush_md()
         # Live lines first; the rewrite pass uses the time in between.
         if refine_run and hub.refine_q and q.empty():
@@ -1295,7 +1339,9 @@ def refined_parts(text: str, it: dict) -> list[tuple[float, float, str]]:
     sents = split_by_text(text, audio_s) if current_settings()["splitLines"] else [(text, 0.0, audio_s)]
     if len(sents) == len(lines):
         return [(r["t"], r["end"], s[0]) for r, s in zip(lines, sents)]
-    return [(to_clock(it["marks"], a), to_clock(it["marks"], b), s) for s, a, b in sents]
+    lo, hi = min(r["t"] for r in lines), max(r["end"] for r in lines)
+    clamp = lambda x: min(max(x, lo), hi)
+    return [(clamp(to_clock(it["marks"], a)), clamp(to_clock(it["marks"], b)), s) for s, a, b in sents]
 
 
 # ---------------------------------------------------------------- websocket

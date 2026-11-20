@@ -17,8 +17,11 @@ command that needs it.
 from __future__ import annotations
 
 import argparse
+import csv
+import datetime as _dt
 import json
 import math
+import os
 import sys
 import time
 from collections import Counter, defaultdict
@@ -36,21 +39,76 @@ def _out_dir(args) -> Path:
 
 
 def _read_exclude(path: str | None) -> set[str]:
-    """Exclusion list. A path that was given but does not exist is an error:
-    silently running without the list would leak the people it names."""
+    """Exclusion list. A path that was given but does not exist, or an entry
+    that is not a user id, is an error: silently running without (part of)
+    the list would leak the people it names."""
     from study.data import load_exclude
     if path is None:
         return set()
     p = Path(path)
     if not p.is_file():
         sys.exit(f"study: exclusion file not found: {p}")
-    return load_exclude(p)
+    try:
+        return load_exclude(p)
+    except ValueError as e:
+        sys.exit(f"study: exclusion list rejected, nothing was run: {e}")
+
+
+def _check_transcripts(path: str) -> Path:
+    p = Path(path)
+    if not p.is_dir():
+        sys.exit(f"study: transcripts folder not found: {p}")
+    return p
+
+
+def _iso_date(value: str) -> str:
+    """argparse type: a real calendar date, normalised to YYYY-MM-DD (file names compare as strings)."""
+    try:
+        return _dt.date.fromisoformat(value.strip()).isoformat()
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a date in the form YYYY-MM-DD")
+
+
+def _nonneg_int(value: str) -> int:
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a whole number")
+    if n < 0:
+        raise argparse.ArgumentTypeError(f"{value} must be 0 or more")
+    return n
+
+
+def _check_dates(args) -> None:
+    if args.since and args.until and args.since > args.until:
+        sys.exit(f"study: --since {args.since} is after --until {args.until}")
+
+
+def _no_lines_message(transcripts: Path, guild: str, since, until) -> str:
+    """Why load_lines came back empty: unknown server, or nothing in the date range."""
+    from study.data import list_guilds
+    row = next((r for r in list_guilds(transcripts) if str(r.get("guild")) == str(guild)), None)
+    if row is None:
+        return (f"study: server {guild} not found in {transcripts}; "
+                f"run `python -m study guilds --transcripts {transcripts}` to list the servers")
+    if since or until:
+        return (f"study: server {guild} has no usable lines between {since or 'the start'} and "
+                f"{until or 'the end'}; its transcripts run from {row.get('first')} to {row.get('last')}")
+    return f"study: server {guild} has no usable lines (all too short, unattributed or excluded)"
+
+
+def _write_atomic(path: Path, text: str, encoding: str = "utf-8") -> None:
+    """Write via a temp file and os.replace, so a failed write never leaves half a file."""
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding=encoding, newline="") as f:
+        f.write(text)
+    os.replace(tmp, path)
 
 
 # ------------------------------------------------------------------- guilds
 def cmd_guilds(args) -> int:
     from study.data import list_guilds
-    rows = list_guilds(Path(args.transcripts))
+    rows = list_guilds(_check_transcripts(args.transcripts))
     if not rows:
         print(f"No server-tagged lines found in {args.transcripts}")
         return 0
@@ -62,45 +120,87 @@ def cmd_guilds(args) -> int:
 
 
 # ---------------------------------------------------------------------- run
-def _purge_cache(cache_path: Path, transcripts: Path, guild: str, since, until, exclude: set[str]) -> int:
-    """Remove label-cache entries for lines by people now on the exclusion list.
+def _scrub_for_exclusion(out: Path, transcripts: Path, guild: str, exclude: set[str]) -> dict:
+    """Bring files left by earlier runs in `out` in line with the exclusion list.
 
-    The cache stores only line hashes and labels, but a person added to the list
-    after an earlier run must still disappear from it. Their line keys are
-    recomputed from the raw transcripts (same formula as data.line_key) and the
-    matching cache rows are dropped. Returns the number of rows removed.
+    Run whenever an exclusion list is in force. The set of VALID line keys is
+    every loaded line of this server over ALL dates (not just --since/--until,
+    so labels of other dates are kept), with the exclusion applied. Then:
+
+      labels.jsonl  rows whose key is not valid are dropped: lines of people
+                    now on the list, and orphans whose raw lines were deleted
+                    from the transcripts (e.g. after a removal request).
+      sample.csv    rows whose key is not valid are dropped, and the
+                    'previous' column is recomputed from the valid lines (so
+                    an excluded person's words no longer appear as context of
+                    someone else's row). Filled-in human_* cells are kept.
+      agreement.json  recomputed from the scrubbed sheet if rows were dropped;
+                    removed if no filled-in row is left.
+
+    Note: `out` is assumed to hold one server (the default study/out/<guild>/).
+    Returns counts of what was removed / changed.
     """
-    if not exclude or not cache_path.exists():
-        return 0
-    from study.data import line_key, _transcript_files, _iter_records
-    bad: set[str] = set()
-    for _date, path in _transcript_files(transcripts, None, None):   # all dates: be thorough
-        for rec in _iter_records(path):
-            user = str(rec.get("user") or "")
-            if user not in exclude:
+    from study.data import load_lines, group_calls
+    from study.agreement import _previous_texts, score_sample
+    res = {"cache_rows": 0, "sample_rows": 0, "sample_previous": 0, "agreement": ""}
+    cache_path, sheet = out / "labels.jsonl", out / "sample.csv"
+    if not cache_path.exists() and not sheet.exists():
+        return res
+    valid = load_lines(transcripts, guild, None, None, exclude)
+    group_calls(valid)
+    valid_keys = {ln.key for ln in valid}
+
+    if cache_path.exists():
+        kept = []
+        for row in cache_path.read_text(encoding="utf-8").splitlines():
+            if not row.strip():
                 continue
-            text = str(rec.get("text") or "").strip()
             try:
-                t = int(rec.get("t"))
-            except (TypeError, ValueError):
-                continue
-            bad.add(line_key(t, user, text))
-    if not bad:
-        return 0
-    kept, removed = [], 0
-    for row in cache_path.read_text(encoding="utf-8").splitlines():
-        try:
-            if json.loads(row).get("key") in bad:
-                removed += 1
-                continue
-        except (json.JSONDecodeError, AttributeError):
-            pass
-        kept.append(row)
-    if removed:
-        tmp = cache_path.with_suffix(".tmp")
-        tmp.write_text("".join(r + "\n" for r in kept), encoding="utf-8")
-        tmp.replace(cache_path)
-    return removed
+                key = json.loads(row).get("key")
+            except (json.JSONDecodeError, AttributeError):
+                key = None                  # a torn row: drop it too
+            if key in valid_keys:
+                kept.append(row)
+            else:
+                res["cache_rows"] += 1
+        if res["cache_rows"]:
+            _write_atomic(cache_path, "".join(r + "\n" for r in kept))
+
+    if sheet.exists():
+        prev = _previous_texts(valid)
+        with open(sheet, newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            header = list(reader.fieldnames or [])
+            rows = list(reader)
+        if "key" in header:
+            new_rows = []
+            for r in rows:
+                key = r.get("key", "")
+                if key not in valid_keys:
+                    res["sample_rows"] += 1
+                    continue
+                if "previous" in r and r["previous"] != prev.get(key, ""):
+                    r["previous"] = prev.get(key, "")
+                    res["sample_previous"] += 1
+                new_rows.append(r)
+            if res["sample_rows"] or res["sample_previous"]:
+                import io
+                buf = io.StringIO()
+                w = csv.DictWriter(buf, fieldnames=header, extrasaction="ignore")
+                w.writeheader()
+                w.writerows(new_rows)
+                _write_atomic(sheet, buf.getvalue(), encoding="utf-8-sig")
+                agreement = out / "agreement.json"
+                if res["sample_rows"] and agreement.exists():
+                    scored = score_sample(sheet)
+                    if any((v or {}).get("n") for v in scored.values()):
+                        from study.report import jsonable
+                        _write_atomic(agreement, json.dumps(jsonable(scored), indent=2) + "\n")
+                        res["agreement"] = "recomputed"
+                    else:
+                        agreement.unlink()
+                        res["agreement"] = "removed"
+    return res
 
 
 def _label_stats(lines, labels: dict, model: str) -> dict:
@@ -124,37 +224,68 @@ def _label_stats(lines, labels: dict, model: str) -> dict:
 
 
 def cmd_run(args) -> int:
-    from study.data import load_lines, group_calls, replies, overlaps
+    from study.data import load_lines, group_calls, replies
     from study.labels import make_labeller, LabelCache, label_lines
-    from study.features import person_features, social_only
-    from study.traits import (TRAITS, PRIOR_WEIGHTS, prior_scores, bootstrap_ci, split_half,
+    from study.features import features_for, social_only
+    from study.traits import (TRAITS, PRIOR_WEIGHTS, CLI_ALPHA, prior_scores, bootstrap_ci, split_half,
                               fit_calibration, apply_calibration, load_questionnaire)
     from study.habits import server_habits
     from study.report import write_report
 
-    transcripts = Path(args.transcripts)
-    out = _out_dir(args)
-    out.mkdir(parents=True, exist_ok=True)
+    # 0. Check every input before anything slow (loading a model, labelling).
+    transcripts = _check_transcripts(args.transcripts)
+    _check_dates(args)
     exclude = _read_exclude(args.exclude)
+    truth_raw = None
+    if args.questionnaire:
+        qp = Path(args.questionnaire)
+        if not qp.is_file():
+            sys.exit(f"study: questionnaire not found: {qp}")
+        try:
+            truth_raw = load_questionnaire(qp)
+        except (OSError, ValueError, UnicodeDecodeError) as e:
+            sys.exit(f"study: questionnaire rejected: {e}")
     t0 = time.time()
 
     # 1. Load. Excluded people are dropped inside load_lines before anything else.
-    lines = load_lines(transcripts, args.guild, args.since, args.until, exclude)
+    load_stats: dict = {}
+    lines = load_lines(transcripts, args.guild, args.since, args.until, exclude, stats=load_stats)
     if not lines:
-        print(f"study: no usable lines for server {args.guild} in {transcripts}", file=sys.stderr)
+        print(_no_lines_message(transcripts, args.guild, args.since, args.until), file=sys.stderr)
         return 1
+    out = _out_dir(args)
+    out.mkdir(parents=True, exist_ok=True)     # only once there is something to write
     calls = group_calls(lines)           # sets line.call once; nothing below regroups
     guild_name = next((ln.guild_name for ln in reversed(lines) if ln.guild_name), str(args.guild))
+    dropped = load_stats.get("excluded_lines", {})
+    matched = sum(1 for n in dropped.values() if n > 0)
     print(f"Loaded {len(lines)} lines in {len(calls)} calls from {guild_name} "
-          f"({len(exclude)} people excluded).", flush=True)
+          f"({len(exclude)} ids on the exclusion list, {matched} of them had lines here: "
+          f"{sum(dropped.values())} lines removed).", flush=True)
+    unmatched = [u for u, n in dropped.items() if n == 0]
+    if unmatched:
+        print(f"study: WARNING: {len(unmatched)} id(s) on the exclusion list matched no line of this server "
+              f"in this date range: {', '.join(sorted(unmatched)[:10])}. Check they are user ids "
+              "(right-click a user > Copy User ID), not server, channel or message ids.",
+              file=sys.stderr, flush=True)
 
-    # 2. Label. The cache makes this resumable: an interrupted run picks up where it stopped.
-    cache_path = out / "labels.jsonl"
-    removed = _purge_cache(cache_path, transcripts, args.guild, args.since, args.until, exclude)
-    if removed:
-        print(f"Removed {removed} cached labels of excluded people.", flush=True)
-    labeller = make_labeller(args.engine, args.model)
-    cache = LabelCache(cache_path)
+    # 2. Bring earlier outputs in line with the exclusion list (cache, hand-label sheet).
+    if exclude:
+        sc = _scrub_for_exclusion(out, transcripts, args.guild, exclude)
+        if sc["cache_rows"]:
+            print(f"Removed {sc['cache_rows']} cached labels of excluded people or deleted lines.", flush=True)
+        if sc["sample_rows"] or sc["sample_previous"]:
+            print(f"Scrubbed sample.csv: {sc['sample_rows']} rows removed, {sc['sample_previous']} "
+                  "'previous' cells rewritten." + (f" agreement.json {sc['agreement']}." if sc["agreement"] else ""),
+                  flush=True)
+
+    # 3. Label. The cache makes this resumable: an interrupted run picks up where it stopped.
+    try:
+        labeller = make_labeller(args.engine, args.model)
+    except (RuntimeError, ImportError, OSError) as e:
+        print(f"study: cannot start the labelling model: {e}", file=sys.stderr)
+        return 1
+    cache = LabelCache(out / "labels.jsonl")
     state = {"next": PROGRESS_EVERY, "t": time.time()}
 
     def progress(*a):
@@ -174,38 +305,40 @@ def cmd_run(args) -> int:
     agreement_path = out / "agreement.json"
     if agreement_path.exists():
         try:
-            lstats["agreement"] = json.loads(agreement_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+            agr = json.loads(agreement_path.read_text(encoding="utf-8"))
+            if any((v or {}).get("n") for v in agr.values()):     # an all-empty result is no result
+                lstats["agreement"] = agr
+        except (json.JSONDecodeError, AttributeError):
             pass
 
-    # 3. Turn-taking is measured on ALL lines (who answers whom does not depend
-    #    on topic); --social-only restricts only the text used for features.
+    # 4. Features. One definition (features.features_for) serves the point
+    #    estimate, the bootstrap and split-half: turn-taking is measured on ALL
+    #    lines of the calls (who answers whom does not depend on topic), and
+    #    --social-only restricts only the text/label features and talk share.
     reps = replies(lines)
-    ovs = overlaps(lines)
-    feat_lines = social_only(lines, labels) if args.social_only else lines
     if args.social_only:
-        print(f"Social-only: {len(feat_lines)} of {len(lines)} lines kept for features.", flush=True)
-
-    # 4. Features for everyone, then the word threshold applied here, so the
-    #    number of people below it can be reported.
-    all_people = person_features(feat_lines, labels, reps, ovs, min_words=0)
+        n_soc = len(social_only(lines, labels))
+        print(f"Social-only: {n_soc} of {len(lines)} lines kept for text features.", flush=True)
+        if n_soc == 0:
+            print("study: WARNING: no line is labelled as social chat, so no one can be scored. "
+                  "Run without --social-only (or label more lines first).", file=sys.stderr, flush=True)
+    all_people = features_for(lines, labels, social=args.social_only)
     included = {u for u, f in all_people.items() if f.get("words", 0) >= args.min_words}
     people = {u: all_people[u] for u in sorted(included)}
     print(f"{len(people)} people with at least {args.min_words} words "
           f"({len(all_people) - len(people)} below).", flush=True)
+    if len(people) < 2:
+        print(f"study: WARNING: only {len(people)} person(s) reached --min-words {args.min_words}; scores are "
+              "relative to the server, so at least 2 are needed (5 for reliability). Try a lower --min-words.",
+              file=sys.stderr, flush=True)
 
     # Score function used for the main scores, the bootstrap and split-half.
     # The included set is fixed here: subsets are NOT re-thresholded (half the
-    # data would otherwise drop most people). Lines keep their call ids from
-    # step 1, and duplicated lines from resampling are left as they are.
+    # data would otherwise drop most people), but everyone's lines stay in the
+    # subsets so talk share and replies keep their real context.
     feats_for_cal = sorted({f for w in PRIOR_WEIGHTS.values() for f in w})
     settings_extra: dict = {}
     calibration = None
-
-    def features_of(subset):
-        subset = sorted(subset, key=lambda ln: ln.t)
-        feats = person_features(subset, labels, replies(subset), overlaps(subset), min_words=0)
-        return {u: f for u, f in feats.items() if u in included}
 
     def score_people(pf):
         if len(pf) < 2:
@@ -216,35 +349,36 @@ def cmd_run(args) -> int:
         return prior_scores(pf)
 
     def compute(subset):
-        return score_people(features_of(subset))
+        return score_people(features_for(subset, labels, social=args.social_only, include=included))
 
-    # 5. Calibration, if a questionnaire was supplied.
-    if args.questionnaire:
-        truth = load_questionnaire(Path(args.questionnaire))
-        truth = {u: v for u, v in truth.items() if u not in exclude and u in people}
+    # 5. Calibration, if a questionnaire was supplied (already read and checked in step 0).
+    if truth_raw is not None:
+        truth = {u: v for u, v in truth_raw.items() if u not in exclude and u in people}
         try:
-            calibration = fit_calibration(people, truth, feats_for_cal)
+            calibration = fit_calibration(people, truth, feats_for_cal, alpha=CLI_ALPHA)
             print(f"Calibrated on {calibration.get('n')} questionnaires.", flush=True)
         except ValueError as e:
             settings_extra["calibration_error"] = str(e)
-            print(f"study: calibration skipped ({e}); using literature weights.", file=sys.stderr, flush=True)
+            print(f"study: WARNING: calibration skipped ({e}); using literature weights.",
+                  file=sys.stderr, flush=True)
 
     scores = score_people(people)
 
-    # 6. Uncertainty: bootstrap over each person's calls, and split-half reliability.
+    # 6. Uncertainty: cluster bootstrap over calls, and split-half over whole calls.
+    #    Both get every speaker's lines (not only the included people).
     cis: dict = {}
     split: dict = {t: float("nan") for t in TRAITS}
+    split_info: dict = {}
     if len(people) >= 2 and args.boot > 0:
         by_user_call: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
-        for ln in feat_lines:
-            if ln.user in included:
-                by_user_call[ln.user][ln.call].append(ln)
+        for ln in lines:
+            by_user_call[ln.user][ln.call].append(ln)
         by_user_call = {u: dict(c) for u, c in by_user_call.items()}
         print(f"Bootstrap ({args.boot} resamples)...", flush=True)
         cis = bootstrap_ci(by_user_call, compute, n=args.boot, seed=0)
+        cis = {u: v for u, v in cis.items() if u in included}
     if len(people) >= 2:
-        incl_lines = [ln for ln in feat_lines if ln.user in included]
-        split = split_half(compute, incl_lines)
+        split = split_half(compute, lines, info=split_info)
 
     # 7. Server habits on all lines.
     habits = server_habits(lines, calls, reps)
@@ -259,7 +393,10 @@ def cmd_run(args) -> int:
     labelled_share = {u: sum(1 for k in ks if labels.get(k) is not None) / len(ks)
                       for u, ks in keys_by_user.items() if ks}
     reliability = {"split_half": split,
-                   "calibration": ({k: calibration.get(k) for k in ("loo_r", "n", "n_by_trait", "weights", "intercept")}
+                   "split_half_users": split_info.get("n_users"),
+                   "calibration": ({k: calibration.get(k) for k in
+                                    ("loo_r", "loo_null95", "loo_p", "loo_ci", "n", "n_by_trait", "alpha",
+                                     "weights", "intercept")}
                                    if calibration else None)}
     settings = {
         "guild": str(args.guild),
@@ -270,9 +407,14 @@ def cmd_run(args) -> int:
         "min_words": args.min_words, "limit": args.limit, "social_only": bool(args.social_only),
         "questionnaire": bool(args.questionnaire), "calibrated": calibration is not None,
         "boot": args.boot,
-        "excluded_count": len(exclude),           # a count only, never the ids
-        "lines": len(feat_lines),
-        "people_total": len(all_people), "people_included": len(people),
+        # counts only, never the ids
+        "excluded_count": matched,                 # ids that actually had lines removed
+        "excluded_listed": len(exclude),
+        "excluded_unmatched": len(unmatched),
+        "lines": len(lines),
+        "people_spoke": len(keys_by_user),         # everyone who spoke, from ALL lines
+        "people_total": len(all_people),           # people with feature lines (social lines under --social-only)
+        "people_included": len(people),
         "people_below_min": len(all_people) - len(people),
         "created": time.strftime("%Y-%m-%d %H:%M"),
         # per-person, read by write_report for people.csv only (never written to server.json)
@@ -280,7 +422,13 @@ def cmd_run(args) -> int:
         "labelled_share_by_user": {u: labelled_share.get(u, float("nan")) for u in people},
         **settings_extra,
     }
-    write_report(out, guild_name, people, scores, cis, reliability, habits, lstats, settings)
+    try:
+        write_report(out, guild_name, people, scores, cis, reliability, habits, lstats, settings)
+    except OSError as e:
+        name = getattr(e, "filename", None) or out
+        print(f"study: cannot write {name} ({e.strerror or e}); is it open in another program? "
+              "Files that were already written are complete; rerun once it is closed.", file=sys.stderr)
+        return 1
     print(f"Done in {time.time() - t0:.0f} s. Wrote {out / 'report.md'}, {out / 'server.json'} and "
           f"{out / 'people.csv'} (people.csv is per-person: researcher only).", flush=True)
     if lstats["unlabelled"]:
@@ -308,6 +456,8 @@ def _cached_labels(cache_path: Path) -> dict[str, dict]:
 def cmd_sample(args) -> int:
     from study.data import load_lines, group_calls
     from study.agreement import export_sample
+    _check_transcripts(args.transcripts)
+    _check_dates(args)
     out = _out_dir(args)
     exclude = _read_exclude(args.exclude)
     labels = _cached_labels(out / "labels.jsonl")
@@ -330,6 +480,15 @@ def cmd_agree(args) -> int:
     sheet = Path(args.sheet)
     if not sheet.is_file():
         sys.exit(f"study: sheet not found: {sheet}")
+    try:
+        with open(sheet, newline="", encoding="utf-8-sig") as f:
+            header = next(csv.reader(f), [])
+    except (OSError, UnicodeDecodeError) as e:
+        sys.exit(f"study: cannot read {sheet} as a CSV sheet: {e}")
+    header = [h.strip() for h in header]
+    if "key" not in header or not any(h.startswith("human_") for h in header):
+        sys.exit(f"study: {sheet} is not a hand-labelling sheet (needs a 'key' column and human_* columns; "
+                 "make one with `python -m study sample`)")
     res = score_sample(sheet)
     print(f"{'label':<10} {'rows':>5} {'kappa':>7} {'accuracy':>9}")
     for name, v in res.items():
@@ -337,9 +496,15 @@ def cmd_agree(args) -> int:
         ks = f"{k:.2f}" if isinstance(k, (int, float)) and not math.isnan(k) else "-"
         as_ = f"{100 * a:.0f}%" if isinstance(a, (int, float)) and not math.isnan(a) else "-"
         print(f"{name:<10} {v.get('n', 0):>5} {ks:>7} {as_:>9}")
+    if not any((v or {}).get("n") for v in res.values()):
+        print("No human_* cells are filled in yet; nothing saved.")
+        return 0
     # Saved next to the sheet so the next `run` in that folder puts it in the report.
     dest = sheet.parent / "agreement.json"
-    dest.write_text(json.dumps(jsonable(res), indent=2) + "\n", encoding="utf-8")
+    try:
+        _write_atomic(dest, json.dumps(jsonable(res), indent=2) + "\n")
+    except OSError as e:
+        sys.exit(f"study: cannot write {dest} ({e})")
     print(f"Saved {dest}; the next `run` with this output folder includes it in the report.")
     return 0
 
@@ -360,29 +525,29 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser("run", help="label, score and write the report for one server")
     common(r)
     r.add_argument("--guild", required=True, help="server id (see `guilds`)")
-    r.add_argument("--since", help="first date, YYYY-MM-DD (inclusive)")
-    r.add_argument("--until", help="last date, YYYY-MM-DD (inclusive)")
+    r.add_argument("--since", type=_iso_date, help="first date, YYYY-MM-DD (inclusive)")
+    r.add_argument("--until", type=_iso_date, help="last date, YYYY-MM-DD (inclusive)")
     r.add_argument("--exclude", help="file with one user id per line to leave out entirely")
     r.add_argument("--out", help="output folder (default: study/out/<guild>/)")
     r.add_argument("--engine", default="auto", choices=["auto", "mlx", "torch", "fake"],
                    help="labelling backend; 'fake' needs no model (dry runs and tests)")
     r.add_argument("--model", default=None, help="override the model repo for mlx/torch")
-    r.add_argument("--min-words", type=int, default=1000,
+    r.add_argument("--min-words", type=_nonneg_int, default=1000,
                    help="people with fewer words are left out of the scores (default 1000)")
-    r.add_argument("--limit", type=int, default=None, help="label at most N new lines this run")
+    r.add_argument("--limit", type=_nonneg_int, default=None, help="label at most N new lines this run")
     r.add_argument("--social-only", action="store_true",
                    help="compute features only from lines labelled as social chat")
     r.add_argument("--questionnaire", help="CSV of questionnaire scores to calibrate against")
-    r.add_argument("--boot", type=int, default=200, help="bootstrap resamples for intervals (0 to skip)")
+    r.add_argument("--boot", type=_nonneg_int, default=200, help="bootstrap resamples for intervals (0 to skip)")
 
     s = sub.add_parser("sample", help="export a hand-labelling sheet from existing labels")
     common(s)
     s.add_argument("--guild", required=True)
-    s.add_argument("--n", type=int, default=200)
+    s.add_argument("--n", type=_nonneg_int, default=200)
     s.add_argument("--out", help="output folder used by `run` (default: study/out/<guild>/)")
     s.add_argument("--exclude", help="exclusion list (same file as for `run`)")
-    s.add_argument("--since")
-    s.add_argument("--until")
+    s.add_argument("--since", type=_iso_date)
+    s.add_argument("--until", type=_iso_date)
 
     a = sub.add_parser("agree", help="score a filled-in hand-labelling sheet")
     common(a)

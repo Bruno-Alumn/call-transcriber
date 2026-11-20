@@ -1817,7 +1817,18 @@ function connect() {
       const d = today(), gone = new Set(m.ids || []);
       if (dayCache.has(d)) { const arr = dayCache.get(d).filter((r) => !gone.has(r.id)); arr.push(...(m.lines || [])); arr.sort((a, b) => a.t - b.t); dayCache.set(d, arr); }
       const c = currentCall();
-      if (c && c.day === d) { allLines = dayCache.get(d) || allLines; lines = linesOf(c, allLines); renderAll(); }
+      if (c && c.day === d) {
+        // keep the reader where they are unless they were following the newest line
+        const feed = $('#feed'), atEnd = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40, keep = feed.scrollTop;
+        allLines = dayCache.get(d) || allLines; lines = linesOf(c, allLines); renderAll();
+        feed.scrollTop = atEnd ? feed.scrollHeight : keep;
+      }
+      // the sidebar's line and word counts for calls that changed
+      for (const cc of calls) if (cc.day === d && dayCache.has(d)) {
+        const ls = linesOf(cc, dayCache.get(d));
+        if ((m.lines || []).some((x) => x.t >= cc.start && x.t <= cc.end)) { cc.lines = ls.length; cc.words = ls.reduce((n, x) => n + x.text.split(/\s+/).length, 0); }
+      }
+      renderCalls();
       setTimeout(() => emit('replace', m), 0);
     }
     else if (m.type === 'line') {

@@ -17,6 +17,7 @@ module needs only the standard library.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
@@ -52,6 +53,41 @@ Label only the LINE. The PREVIOUS line is context only.
 Never invent a value. If no value fits well, pick the closest listed one (act: statement, tone: neutral, emotion: none).
 Answer with ONE line of JSON and nothing else, using only the values listed above, for example:
 {"sentiment": "neutral", "act": "question", "emotion": "none", "tone": "neutral", "context": "logistics"}"""
+
+# Near-synonyms the model produces instead of a listed value. Mapped before an
+# answer is rejected, for both backends (on mlx, constrained decoding makes this
+# rare). Keys are lowercased model outputs; values must be in LABELS.
+SYNONYMS: dict[str, dict[str, str]] = {
+    "act": {"command": "request", "instruction": "request", "order": "request", "suggestion": "request",
+            "exclamation": "statement", "answer": "statement", "comment": "statement",
+            "agree": "agreement", "disagree": "disagreement", "greet": "greeting"},
+    "emotion": {"disappointment": "sadness", "disappointed": "sadness", "sad": "sadness",
+                "frustration": "anger", "frustrated": "anger", "annoyance": "anger", "annoyed": "anger",
+                "angry": "anger", "nervous": "fear", "worry": "fear", "worried": "fear",
+                "anxiety": "fear", "anxious": "fear", "happy": "joy", "happiness": "joy",
+                "excitement": "joy", "surprised": "surprise", "neutral": "none"},
+    "sentiment": {"mixed": "neutral"},
+    "tone": {"friendly": "warm", "rude": "hostile", "aggressive": "hostile"},
+    "context": {"game": "gameplay", "chat": "social", "tech": "logistics", "planning": "logistics"},
+}
+
+
+def label_schema() -> dict:
+    """JSON schema for one answer: exactly the LABELS keys, each an enum of its values.
+    Used to constrain decoding on the mlx backend."""
+    return {"type": "object", "additionalProperties": False, "required": list(LABELS),
+            "properties": {k: {"type": "string", "enum": list(v)} for k, v in LABELS.items()}}
+
+
+def labeller_version(constrained: bool) -> str:
+    """Short id of everything that shapes the labels apart from the model:
+    the prompt, the token cap, the allowed values, the synonym map and whether
+    decoding is constrained. Part of the cache name, so changing any of them
+    relabels instead of silently reusing old answers."""
+    blob = json.dumps([SYSTEM_PROMPT, RETRY_REMINDER, MAX_NEW_TOKENS, LABELS, SYNONYMS, bool(constrained)],
+                      sort_keys=True)
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:8] + ("+json" if constrained else "")
+
 
 RETRY_REMINDER = ("Answer with only the JSON line, with keys sentiment, act, emotion, tone, context "
                   "and only the allowed values.")
@@ -96,17 +132,33 @@ def _first_obj(answer: str) -> dict | None:
     return {str(k).strip().lower(): v for k, v in obj.items()}
 
 
+def _synonyms_for(allowed: list[str]) -> dict[str, str]:
+    """The synonym map of the label whose allowed list this is (matched by contents)."""
+    for key, values in LABELS.items():
+        if list(values) == list(allowed):
+            return SYNONYMS.get(key, {})
+    return {}
+
+
 def _clean_value(val, allowed: list[str]) -> str | None:
-    """Lowercased allowed value, or None. "exclamation/statement" -> "statement" (first allowed part)."""
+    """Lowercased allowed value, or None. "exclamation/statement" -> "statement" (first allowed part).
+    Near-synonyms ("command" for act, "disappointment" for emotion) are mapped via SYNONYMS."""
     if not isinstance(val, str):
         return None
+    syn = _synonyms_for(allowed)
     val = val.strip().strip(".").lower()
     if val in allowed:
         return val
+    if val in syn:
+        return syn[val]
     for part in re.split(r"[/|,;]| or ", val):
         part = part.strip().strip(".")
         if part in allowed:
             return part
+    for part in re.split(r"[/|,;]| or ", val):
+        part = part.strip().strip(".")
+        if part in syn:
+            return syn[part]
     return None
 
 
@@ -146,6 +198,13 @@ class Labeller(Protocol):
         ...
 
 
+# Returned by label() for a line whose generation raised (out of memory, an
+# interrupted load...). label_lines does not cache it and leaves the line out
+# of the result, so the next run retries it. Distinct from None, which means
+# "the model answered but the answer could not be parsed" and IS cached.
+GENERATION_ERROR = object()
+
+
 class _LLMLabeller:
     """Shared logic for the model backends: prompt, greedy generate, parse, one retry."""
 
@@ -174,7 +233,7 @@ class _LLMLabeller:
                 out.append(self.label_one(previous, text))
             except Exception as e:        # one bad line must not stop a long run
                 print(f"labels: generation failed ({type(e).__name__}: {e})"[:200], file=sys.stderr, flush=True)
-                out.append(None)
+                out.append(GENERATION_ERROR)   # not cached: retried on the next run
         return out
 
 
@@ -184,15 +243,35 @@ class MlxLabeller(_LLMLabeller):
     def __init__(self, repo: str = MLX_REPO):
         from mlx_vlm import load
         self.repo = repo
-        self.name = f"mlx:{repo}"
         self.model, self.proc = load(repo)
+        # Constrained decoding: the output is forced to match label_schema(), so
+        # the model cannot drift into an unlisted value and start "reasoning"
+        # mid-JSON (the common failure without it). Decided ONCE here, so the
+        # cache name is the same for the whole run. Falls back to free decoding
+        # if mlx_vlm.structured / llguidance is unavailable or rejects the tokenizer.
+        self._schema = label_schema()
+        self.constrained = False
+        try:
+            self._make_processor()
+            self.constrained = True
+        except Exception as e:           # ImportError, TypeError, tokenizer quirks
+            print(f"labels: constrained decoding unavailable ({type(e).__name__}: {e}); "
+                  "using free decoding"[:300], file=sys.stderr, flush=True)
+        self.name = f"mlx:{repo}:{labeller_version(self.constrained)}"
+
+    def _make_processor(self):
+        """A fresh JSON-schema logits processor (it is stateful: one per generate call)."""
+        from mlx_vlm.structured import build_json_schema_logits_processor
+        return build_json_schema_logits_processor(getattr(self.proc, "tokenizer", self.proc), self._schema)
 
     def _generate(self, messages: list[dict]) -> str:
         from mlx_vlm import generate
         from mlx_vlm.prompt_utils import apply_chat_template
         prompt = apply_chat_template(self.proc, self.model.config, messages, num_images=0)
+        extra = {"logits_processors": [self._make_processor()]} if self.constrained else {}
         # temperature 0.0 makes mlx_vlm use argmax (greedy), so answers are repeatable.
-        out = generate(self.model, self.proc, prompt, max_tokens=MAX_NEW_TOKENS, temperature=0.0, verbose=False)
+        out = generate(self.model, self.proc, prompt, max_tokens=MAX_NEW_TOKENS, temperature=0.0,
+                       verbose=False, **extra)
         return (out.text if hasattr(out, "text") else str(out)).strip()
 
 
@@ -203,7 +282,10 @@ class TorchLabeller(_LLMLabeller):
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
         self.repo = repo
-        self.name = f"torch:{repo}"
+        # No constrained decoding on this path yet (transformers would need
+        # prefix_allowed_tokens_fn or llguidance's HF integration; untested).
+        self.constrained = False
+        self.name = f"torch:{repo}:{labeller_version(False)}"
         self.proc = AutoTokenizer.from_pretrained(repo)
         self.model = AutoModelForCausalLM.from_pretrained(repo, dtype=torch.bfloat16).to("cuda").eval()
 
@@ -338,9 +420,16 @@ def make_labeller(engine: str = "auto", model: str | None = None) -> Labeller:
             raise RuntimeError("No local model backend available: labelling needs an Apple Silicon Mac with "
                                "mlx_vlm installed (cd server && uv sync) or an NVIDIA GPU with torch + "
                                "transformers. Use --engine fake for a dry run without a model.")
+    # Check the hardware BEFORE loading (or downloading several GB of) a model.
     if engine == "mlx":
+        if not _mlx_ok():
+            raise RuntimeError("--engine mlx needs an Apple Silicon Mac with mlx_vlm installed "
+                               "(cd server && uv sync). Use --engine fake for a dry run.")
         return MlxLabeller(model or MLX_REPO)
     if engine == "torch":
+        if not _cuda_ok():
+            raise RuntimeError("--engine torch needs an NVIDIA GPU with a CUDA build of torch "
+                               "(torch.cuda.is_available() is False). Use --engine fake for a dry run.")
         return TorchLabeller(model or TORCH_REPO)
     raise ValueError(f"unknown engine {engine!r} (expected auto, mlx, torch or fake)")
 
@@ -372,6 +461,19 @@ class LabelCache:
                         self._data[(rec["key"], rec["model"])] = rec.get("labels")
                     except (json.JSONDecodeError, KeyError, TypeError):
                         continue      # a half-written last line after a crash: ignore it
+            # After a hard kill the file may end in a torn row without a newline;
+            # the next put() would then be glued onto it and lost. End the file
+            # with a newline first so the torn row stays isolated.
+            with self.path.open("rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                last = b""
+                if size:
+                    f.seek(size - 1)
+                    last = f.read(1)
+            if size and last != b"\n":
+                with self.path.open("ab") as f:
+                    f.write(b"\n")
 
     def has(self, key: str, model: str) -> bool:
         return (key, model) in self._data
@@ -411,7 +513,11 @@ def label_lines(lines, labeller: Labeller, cache: LabelCache,
     progress called as progress(done, todo) after each batch of new lines.
     limit    label at most this many NEW lines this run (cached lines are always returned).
     Lines past the limit are left out of the result rather than given None.
+    A line whose generation raised (GENERATION_ERROR) is neither cached nor in
+    the result, so it counts as unlabelled and the next run retries it.
     """
+    if limit is not None and limit < 0:
+        raise ValueError("limit must be >= 0")
     lines = list(lines)
     prev = _previous_texts(lines)
     result: dict[str, dict | None] = {}
@@ -432,6 +538,9 @@ def label_lines(lines, labeller: Labeller, cache: LabelCache,
         chunk = todo[i:i + batch]
         answers = labeller.label([(ln.key, prev.get(ln.key, ""), ln.text) for ln in chunk])
         for ln, lab in zip(chunk, answers):
+            if lab is GENERATION_ERROR:
+                result.pop(ln.key, None)
+                continue
             cache.put(ln.key, labeller.name, lab)
             result[ln.key] = lab
         done += len(chunk)

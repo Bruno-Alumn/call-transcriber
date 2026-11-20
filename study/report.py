@@ -20,8 +20,10 @@ built; every dict is read defensively with .get().
 from __future__ import annotations
 
 import csv
+import io
 import json
 import math
+import os
 from pathlib import Path
 
 # Kept in sync with study.traits.TRAITS (copied so this module imports alone).
@@ -35,7 +37,8 @@ TRAITS = ["openness", "conscientiousness", "extraversion", "agreeableness", "neu
 THIRD_CUT = 0.43
 
 # Flags written to people.csv.
-FEW_CALLS = 3          # fewer calls than this: estimates hang on very few sessions
+FEW_CALLS = 5          # fewer calls than this: estimates hang on very few sessions, and the
+                       # bootstrap gives no interval (kept equal to traits.MIN_CI_CALLS)
 WIDE_CI = 1.5          # a 95% interval wider than 1.5 SD is too vague to read much into
 FEW_LABELS_SHARE = 0.5  # less than half of the person's lines labelled
 
@@ -94,6 +97,28 @@ def jsonable(obj):
         return jsonable(float(obj))
     except (TypeError, ValueError):
         return str(obj)
+
+
+def _write_atomic(path: Path, text: str, encoding: str = "utf-8") -> None:
+    """Write via <name>.tmp + os.replace: a failed write (file open in Excel,
+    read-only) leaves the previous file intact instead of half a file."""
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with open(tmp, "w", encoding=encoding, newline="") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _agreement_present(agree) -> bool:
+    """An agreement block where no label has any checked row is no result."""
+    return bool(agree) and any(_num((v or {}).get("n")) > 0 for v in agree.values() if isinstance(v, dict))
 
 
 def _mean(xs: list[float]) -> float:
@@ -164,8 +189,8 @@ def habits_summary(habits: dict) -> dict:
 
 
 # -------------------------------------------------------------------- writers
-def _write_people_csv(path: Path, people_features: dict, scores: dict, cis: dict,
-                      habits: dict, names: dict, labelled_share: dict) -> None:
+def _people_csv(people_features: dict, scores: dict, cis: dict,
+                habits: dict, names: dict, labelled_share: dict) -> str:
     roles = (habits or {}).get("roles") or {}
     degree = ((habits or {}).get("reply_network") or {}).get("degree") or {}
     header = ["user", "name", "words", "lines", "calls", "talk_min", "role", "reply_partners"]
@@ -177,7 +202,8 @@ def _write_people_csv(path: Path, people_features: dict, scores: dict, cis: dict
     users = sorted(scores.keys() | people_features.keys(),
                    key=lambda u: -_num((people_features.get(u) or {}).get("words")) if _finite(
                        (people_features.get(u) or {}).get("words")) else 0)
-    with open(path, "w", newline="", encoding="utf-8") as f:
+    f = io.StringIO()
+    if True:
         w = csv.writer(f)
         w.writerow(header)
         for u in users:
@@ -204,6 +230,7 @@ def _write_people_csv(path: Path, people_features: dict, scores: dict, cis: dict
                 row += [_fmt(sc.get(t)), _fmt(lo_hi[0]), _fmt(lo_hi[1])]
             row.append(";".join(flags))
             w.writerow(row)
+    return f.getvalue()
 
 
 def _heatmap_table(heat) -> list[str]:
@@ -231,6 +258,13 @@ def _report_md(guild_name: str, settings: dict, label_stats: dict, reliability: 
     add("This report describes the server as a whole. It does not list any person, "
         "and it is not a judgement of anyone.")
     add("")
+    n_inc = s.get("people_included")
+    if isinstance(n_inc, int) and n_inc < 2:
+        add(f"> **No trait scores in this run:** only {n_inc} person(s) reached the "
+            f"{s.get('min_words', '?')}-word minimum, and scores are relative to the server, so at least 2 "
+            "are needed (5 for the reliability check). Rerun with a lower --min-words"
+            + (" or without --social-only" if s.get("social_only") else "") + ".")
+        add("")
 
     # ---- How to read this (first, so nobody skips it)
     calibrated = bool(s.get("calibrated"))
@@ -250,12 +284,14 @@ def _report_md(guild_name: str, settings: dict, label_stats: dict, reliability: 
     if calibrated:
         add("- **Calibrated.** A questionnaire was supplied, so the weights were fitted to those answers "
             "(see Reliability for how well the fit held up on people it had not seen).")
+    elif s.get("questionnaire"):
+        err = str(s.get("calibration_error") or "reason not recorded").rstrip(".")
+        add(f"- **Uncalibrated.** A questionnaire was given but calibration was not possible: {err}. "
+            "The literature's directions were used instead, so nothing here has been checked against "
+            "how people describe themselves.")
     else:
         add("- **Uncalibrated.** No questionnaire was supplied, so nothing here has been checked against "
             "how people describe themselves. The weights are the literature's directions only.")
-    if s.get("calibration_error"):
-        add(f"  A questionnaire was given but calibration was not possible: {s['calibration_error']} "
-            "The uncalibrated scores were used instead.")
     add("- **Transcripts are imperfect.** Speech recognition drops and mishears words, and a "
         "small local model labels each line's tone and intent; both add noise.")
     add("- **Thirds**: \"low\", \"middle\" and \"high\" below mean a score under -0.43, between -0.43 "
@@ -271,13 +307,26 @@ def _report_md(guild_name: str, settings: dict, label_stats: dict, reliability: 
     add(f"- Lines analysed: {s.get('lines', '-')}"
         + (" (only lines labelled as social chat were used for the scores)" if s.get("social_only") else ""))
     add(f"- Calls: {hab.get('calls', '-')}, hours of speech: {_fmt(hab.get('hours_spoken'), 1)}")
-    add(f"- People who spoke: {s.get('people_total', '-')}; "
-        f"included in the scores: {s.get('people_included', '-')}; "
-        f"below the {s.get('min_words', '-')}-word minimum (left out of the scores): "
-        f"{s.get('people_below_min', '-')}")
-    if s.get("excluded_count"):
-        add(f"- People on the exclusion list: {s['excluded_count']}. Their speech was removed before "
-            "any analysis and appears nowhere in these outputs.")
+    spoke = s.get("people_spoke", s.get("people_total", "-"))
+    if s.get("social_only"):
+        add(f"- People who spoke: {spoke}; with social-chat lines: {s.get('people_total', '-')}; "
+            f"included in the scores: {s.get('people_included', '-')}; "
+            f"below the {s.get('min_words', '-')}-word minimum in social lines (left out of the scores): "
+            f"{s.get('people_below_min', '-')}")
+    else:
+        add(f"- People who spoke: {spoke}; "
+            f"included in the scores: {s.get('people_included', '-')}; "
+            f"below the {s.get('min_words', '-')}-word minimum (left out of the scores): "
+            f"{s.get('people_below_min', '-')}")
+    if s.get("excluded_listed"):
+        add(f"- Exclusion list: {s['excluded_listed']} id(s); {s.get('excluded_count', 0)} of them spoke in "
+            "this server and date range, and all their lines were removed before any analysis (they appear "
+            "nowhere in these outputs and were never shown to the labelling model).")
+        if s.get("excluded_unmatched"):
+            add(f"  {s['excluded_unmatched']} id(s) on the list matched no line here (they may not have spoken "
+                "in this period, or the id may be wrong: check it is a user id).")
+        add("  Limitation: the list removes what excluded people SAID. If others mention them by name, those "
+            "other people's lines are still analysed (and can appear as text in sample.csv).")
     add("")
 
     # ---- Label quality
@@ -292,7 +341,7 @@ def _report_md(guild_name: str, settings: dict, label_stats: dict, reliability: 
         add(f"- Lines not labelled yet (run stopped early or --limit): {int(_num(ls['unlabelled']))}. "
             "Run again to continue; finished lines are kept.")
     agree = ls.get("agreement") or rel.get("agreement")
-    if agree:
+    if _agreement_present(agree):
         add("- Agreement with a person's hand labels (Cohen's kappa: 1 is perfect, 0 is chance, "
             "above about 0.6 is usually considered good):")
         add("")
@@ -320,8 +369,9 @@ def _report_md(guild_name: str, settings: dict, label_stats: dict, reliability: 
     add("## Trait spread across the server")
     add("")
     add("Share of included people in each third. The interval width is the median width of each "
-        "person's 95% range from resampling their calls: the wider it is, the less a single score means "
-        "(a width of 2 covers most of the scale).")
+        "person's 95% range from resampling the server's calls: the wider it is, the less a single score "
+        f"means (a width of 2 covers most of the scale). People with fewer than {FEW_CALLS} calls get no "
+        "interval (too few calls to show how much they vary).")
     add("")
     add("| trait | people | low | middle | high | median interval width |")
     add("|---|---|---|---|---|---|")
@@ -335,10 +385,13 @@ def _report_md(guild_name: str, settings: dict, label_stats: dict, reliability: 
     add("## Reliability")
     add("")
     sh = rel.get("split_half") or {}
-    add("**Split-half consistency.** Each person's calls were split into two halves (alternate calls) "
-        "and scored separately. The number is how well the two halves agree across people, corrected "
-        "to full length (1 = perfectly consistent, 0 = no consistency). Below about 0.5 the scores "
-        "mostly reflect which calls happened to be recorded.")
+    n_sh = rel.get("split_half_users")
+    add("**Split-half consistency.** The server's calls were split into two halves (alternate whole calls, "
+        "so everyone in a call is in the same half) and scored separately. The number is how well the two "
+        "halves agree across people, corrected to full length (1 = perfectly consistent, 0 = no "
+        "consistency). Below about 0.5 the scores mostly reflect which calls happened to be recorded. "
+        "A negative value is shown uncorrected and also means no consistency."
+        + (f" Compared over {n_sh} people who spoke in both halves." if isinstance(n_sh, int) else ""))
     add("")
     if sh:
         add("| trait | split-half r |")
@@ -357,13 +410,19 @@ def _report_md(guild_name: str, settings: dict, label_stats: dict, reliability: 
             "between predicted and self-reported scores (each person predicted by a model fitted "
             "without them):")
         add("")
-        add("| trait | leave-one-out r |")
-        add("|---|---|")
+        add("| trait | answers | leave-one-out r | 95% range | chance level (95th pct) | p |")
+        add("|---|---|---|---|---|---|")
         for t in TRAITS:
-            add(f"| {t} | {_fmt((cal.get('loo_r') or {}).get(t))} |")
+            ci = (cal.get("loo_ci") or {}).get(t) or (None, None)
+            add(f"| {t} | {(cal.get('n_by_trait') or {}).get(t, '-')} | {_fmt((cal.get('loo_r') or {}).get(t))} | "
+                f"{_fmt(ci[0])} to {_fmt(ci[1])} | {_fmt((cal.get('loo_null95') or {}).get(t))} | "
+                f"{_fmt((cal.get('loo_p') or {}).get(t))} |")
         add("")
-        add("Near 0 (or '-', too few answers) means the calibrated scores for that trait are no better "
-            "than chance; with only a handful of questionnaires this is common.")
+        add("The chance level is what the same procedure gives when the questionnaire answers are shuffled "
+            "between people: with few questionnaires and many features, values of 0.3-0.6 happen by luck. "
+            "A leave-one-out r below the chance level (or p above 0.05) means the calibrated scores for that "
+            "trait are no better than chance. With only a handful of questionnaires this is common."
+            + (f" Ridge penalty: {cal.get('alpha')}." if cal.get("alpha") is not None else ""))
         add("")
 
     # ---- Habits
@@ -436,7 +495,8 @@ def write_report(out_dir, guild_name, people_features, scores, cis, reliability,
     dist = trait_distribution(scores, cis)
     hab = habits_summary(habits)
 
-    _write_people_csv(out / "people.csv", people_features, scores, cis, habits, names, labelled_share)
+    # Render everything in memory first, then replace each file atomically.
+    people_text = _people_csv(people_features, scores, cis, habits, names, labelled_share)
 
     server = {
         "guild_name": guild_name,
@@ -448,9 +508,10 @@ def write_report(out_dir, guild_name, people_features, scores, cis, reliability,
     }
     # Calibration weights are aggregate (one weight per feature), keep them;
     # nothing in reliability is per person.
-    with open(out / "server.json", "w", encoding="utf-8") as f:
-        json.dump(jsonable(server), f, indent=2, allow_nan=False)
-        f.write("\n")
-
-    (out / "report.md").write_text(
-        _report_md(guild_name, public_settings, label_stats, reliability, dist, hab), encoding="utf-8")
+    server_text = json.dumps(jsonable(server), indent=2, allow_nan=False) + "\n"
+    report_text = _report_md(guild_name, public_settings, label_stats, reliability, dist, hab)
+    # report.md last: if an earlier file fails, the old report (describing the
+    # old files) is not replaced by one that describes files that were not written.
+    _write_atomic(out / "people.csv", people_text)
+    _write_atomic(out / "server.json", server_text)
+    _write_atomic(out / "report.md", report_text)

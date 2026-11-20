@@ -17,7 +17,9 @@ reading accepts files with or without the BOM.
 from __future__ import annotations
 
 import csv
+import io
 import math
+import os
 import random
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -84,13 +86,18 @@ def export_sample(lines, labels: dict, out_csv, n: int = 200, seed: int = 0) -> 
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     header = (["key", "text", "previous"] + [f"model_{k}" for k in names]
               + [f"human_{k}" for k in names])
-    with open(out_csv, "w", newline="", encoding="utf-8-sig") as f:
-        w = csv.writer(f)
-        w.writerow(header)
-        for ln in picked:
-            lab = labels[ln.key]
-            w.writerow([ln.key, ln.text, prev.get(ln.key, "")]
-                       + [lab.get(k, "") for k in names] + [""] * len(names))
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(header)
+    for ln in picked:
+        lab = labels[ln.key]
+        w.writerow([ln.key, ln.text, prev.get(ln.key, "")]
+                   + [lab.get(k, "") for k in names] + [""] * len(names))
+    # Temp file + os.replace: a failed write never leaves half a sheet.
+    tmp = out_csv.with_name(out_csv.name + ".tmp")
+    with open(tmp, "w", newline="", encoding="utf-8-sig") as f:
+        f.write(buf.getvalue())
+    os.replace(tmp, out_csv)
     return len(picked)
 
 
