@@ -17,7 +17,7 @@ jobs:
         with: { node-version: 22 }
       - name: Extension + dashboard JavaScript
         run: |
-          for f in extension/*.js; do node --check "$f"; done
+          for f in extension/*.js app/desktop/*.js test/app-test.js; do node --check "$f"; done
           node -e "const s=require('fs').readFileSync('server/dashboard/index.html','utf8'); new Function(s.slice(s.indexOf('<script>')+8, s.lastIndexOf('</script>'))); console.log('dashboard ok')"
           python3 -c "import json; json.load(open('extension/manifest.json'))"
       - name: Python
@@ -49,6 +49,17 @@ jobs:
       - name: End-to-end test (3 overlapping speakers, names, channel)
         working-directory: server
         run: uv run python ../test/server_e2e.py --engine onnx
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Install desktop app + test tools
+        shell: bash
+        run: |
+          (cd app/desktop && npm ci --no-audit --no-fund && node node_modules/electron/install.js)
+          (cd test && npm ci --no-audit --no-fund)
+      - name: Desktop app test (built-in Discord window, fake call, 4 speakers)
+        shell: bash
+        env: { SERVER_ARGS: "--engine onnx" }
+        run: node test/app-test.js "$RUNNER_TEMP/app-test"
 
   build-mac:
     name: Build macOS app + Windows package
@@ -56,16 +67,12 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
       - name: Build Call Transcriber.app
-        run: |
-          zsh app/mac/build.sh
-          cd app/mac/build && ditto -c -k --keepParent "Call Transcriber.app" ../../../Call-Transcriber-macOS.zip
+        run: zsh app/mac/build.sh
       - name: Build Windows package
         run: zsh app/windows/make-zip.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Call-Transcriber-macOS
-          path: Call-Transcriber-macOS.zip
       - uses: actions/upload-artifact@v4
         with:
           name: Call-Transcriber-Windows

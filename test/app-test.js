@@ -5,6 +5,7 @@
 const { _electron: electron } = require('playwright');
 const http = require('http'), fs = require('fs'), path = require('path');
 const SCRATCH = path.resolve(process.argv[2] || fs.mkdtempSync(path.join(require('os').tmpdir(), 'ct-app-')));
+fs.mkdirSync(SCRATCH, { recursive: true });
 const ROOT = path.join(__dirname, '..');
 const DESKTOP = path.join(ROOT, 'app', 'desktop');
 const OUT = path.join(SCRATCH, 'tx-app');

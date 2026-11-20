@@ -4,7 +4,8 @@ set -e
 cd "$(dirname "$0")/../.."
 OUT=dist/CallTranscriber-Windows.zip
 STAGE=$(mktemp -d)/CallTranscriber
-mkdir -p "$STAGE/server" "$STAGE/app/windows" dist
+mkdir -p "$STAGE/server" "$STAGE/app/windows" "$STAGE/app/desktop" dist
+cp app/desktop/*.js app/desktop/package.json app/desktop/package-lock.json "$STAGE/app/desktop/"
 cp -R extension "$STAGE/extension"
 rm -rf "$STAGE/extension/events"
 cp server/server.py server/pyproject.toml server/uv.lock server/.python-version "$STAGE/server/"

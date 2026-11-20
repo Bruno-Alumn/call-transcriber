@@ -3,67 +3,66 @@
 Live, local transcripts of Discord voice calls: every person is transcribed from
 their own audio stream, grouped by server and voice channel, with a dashboard
 (history, search, analytics). Audio never leaves your computer. macOS and
-Windows share one codebase:
+Windows share one codebase and one app.
 
 | Part | Where | Platforms |
 |---|---|---|
-| Chrome extension | `extension/` | both |
+| Desktop app (Electron): dashboard + Discord built in | `app/desktop/` | both |
 | Transcription server + dashboard | `server/` | both (engine picked per machine) |
-| Mac app (Swift, WKWebView) | `app/mac/` | macOS |
-| Windows app (pywebview + tray) + installer | `app/windows/`, `install.cmd` | Windows |
-| Tests (fake Discord call, server e2e) | `test/` | both, run by CI |
+| Mac bundle build | `app/mac/build.sh` | macOS |
+| Windows installer (+ launcher kept for old shortcuts) | `install.cmd`, `app/windows/` | Windows |
+| Chrome extension (optional: use Discord in Chrome instead) | `extension/` | both |
+| Tests (fake Discord call, app e2e, server e2e) | `test/` | both, run by CI |
 
-CI (`.github/workflows/ci.yml`) runs the same end-to-end test on macOS and
-Windows and builds both apps on every push, so the two stay at parity.
-
-## Updating
-- **Mac:** `git pull`, then `app/mac/build.sh` (rebuilds the app), reload the
-  extension in `chrome://extensions`.
-- **Windows:** `git pull`, then double-click `install.cmd`, reload the extension.
-- Transcripts, names and archive choices are personal data and are never
-  committed (see `.gitignore`); they stay on each machine.
-
-
-Live, local transcript of a Discord voice call. Each person is transcribed
-from their own audio stream, so overlapping speech stays separate and every
-line is labeled with who said it. Audio never leaves your Mac.
+CI (`.github/workflows/ci.yml`) runs the same end-to-end tests on macOS and
+Windows on every push, so the two stay at parity.
 
 ## How it works
-Discord's web app receives each participant as a separate audio stream tagged
-with their user id. The extension reads those streams inside the Discord tab
-(read-only; your playback is untouched) and sends them to a local Whisper
-server, which writes the transcript.
+Discord's web client receives each participant as a separate audio stream
+tagged with their user id. The app opens discord.com in its own built-in
+Chromium window and adds a small read-only hook (`extension/page-hook.js`)
+before Discord's code runs; it reads those streams (your playback is untouched)
+and the app passes them to the local server, which transcribes and writes the
+transcript. No Chrome or extension needed.
 
-## One-time setup
-1. `chrome://extensions` → Developer mode on → **Load unpacked** → `~/discord-transcriber/extension`.
+## Setup (Mac)
+1. Server: `cd server && uv sync`.
+2. App: `app/mac/build.sh` (needs Node.js and Xcode's command-line tools). It
+   installs **Call Transcriber** in ~/Applications.
+3. Open it, sign in to Discord in its Discord window once (⌘D shows it), and
+   join a voice channel. macOS asks for the microphone the first time.
 
 ## The app
-**Call Transcriber** (in ~/Applications, also in Launchpad/Spotlight) runs the
-transcription server and shows a live dashboard: transcript with search, who's
-in the call and talking, talk time per person, activity over time, a 10-minute
-timeline, crosstalk and most-said words, per call session or whole day.
-Closing the window keeps transcribing; Quit (Cmd+Q) stops it.
-Rebuild after changes: `app/mac/build.sh`. Dashboard also at http://127.0.0.1:8765/.
+- **Dashboard window:** transcript with search and export, who's in the call
+  and talking, talk time, activity, timeline, crosstalk, most-said words, per
+  call or whole day; history grouped by server and channel.
+- **Discord window:** the real Discord web app (your account). Closing it
+  hides it and keeps you in the call; the **Discord** button or ⌘D / Ctrl+D
+  brings it back. Discord ▸ Pause Transcribing pauses.
+- Closing the dashboard keeps transcribing; Quit (⌘Q, or the Windows tray
+  icon) stops it. The app starts and stops the server itself.
+- Dashboard also at http://127.0.0.1:8765/.
 
-## Each time (without the app)
-1. Run `~/discord-transcriber/start.sh` and leave it running.
-2. Open discord.com in Chrome, join the voice channel. That's it — no button.
-   The toolbar badge shows how many people are being transcribed
-   (OFF = server not running, II = paused; clicking the icon pauses/resumes).
-3. Transcript: `~/discord-transcriber/transcripts/YYYY-MM-DD.md`, also printed live.
+## Updating
+The dashboard shows when a new release is out; **Update now** installs it and
+**Restart now** finishes (rebuilding the Mac app only when Electron changed).
+By hand: `git pull`, then `app/mac/build.sh` (Mac) or `install.cmd` (Windows).
+Transcripts, names and archive choices are personal data and are never
+committed (see `.gitignore`); they stay on each machine.
 
-While the server runs, **any** Discord call you're in is transcribed.
+## Using Chrome instead (optional)
+Run `start.sh` (or the app), load `extension/` in `chrome://extensions`
+(Developer mode → Load unpacked) and join the call in Chrome. Don't be in the
+same call in both Chrome and the app.
 
 Notes
-- Muting Chrome at the system level is fine. Don't use Discord's *Deafen* — it stops audio from arriving.
+- Don't use Discord's *Deafen*: it stops audio from arriving.
 - Your own microphone isn't transcribed (only other people).
-- People whose name can't be read from Discord's page show as `user-1234`
-  (last digits of their Discord id) — never a guessed name.
-- After reloading the extension, reload the Discord tab (or rejoin the call).
+- People whose name can't be read show as `user-1234` (last digits of their id).
 
 ## Windows
 `app/windows/make-zip.sh` builds `dist/CallTranscriber-Windows.zip` (installer,
-tray app, server, extension; see README-WINDOWS.md). The server picks its speech
+app, server; see README-WINDOWS.md). The server picks its speech
 engine per machine: MLX on Apple Silicon, Granite on CUDA with an NVIDIA GPU,
 otherwise Parakeet on ONNX Runtime (CPU: 7.4% word error, ~50x real time).
 Override with `--engine mlx|torch|onnx`.
@@ -91,3 +90,7 @@ streams found, audio chunks, audio-engine state, names and errors.
 ## Tests
 `cd test && node run.js /tmp/somewhere` runs the real extension in Chromium
 against a fake call with three overlapping speakers and checks the transcript.
+`node test/app-test.js /tmp/somewhere` runs the real desktop app (its own server,
+built-in Discord window pointed at the fake call) and checks injection timing,
+capture rate with the window hidden, speakers, channels, and that quitting
+stops the server.

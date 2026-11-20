@@ -1,5 +1,5 @@
 # Push a tag like v1.2.0 (matching VERSION) to publish a GitHub Release with the
-# macOS app and the Windows package attached. The apps' "Update" button installs
+# Windows package attached (on macOS, app/mac/build.sh builds the app from the checkout). The apps' "Update" button installs
 # the newest release tag via git.
 name: Release
 
@@ -18,10 +18,6 @@ jobs:
         with: { fetch-depth: 0 }
       - name: Tag must match VERSION
         run: test "v$(cat VERSION)" = "${GITHUB_REF_NAME}"
-      - name: Build macOS app
-        run: |
-          zsh app/mac/build.sh
-          cd app/mac/build && ditto -c -k --keepParent "Call Transcriber.app" ../../../Call-Transcriber-macOS.zip
       - name: Build Windows package
         run: zsh app/windows/make-zip.sh
       - name: Release notes = tag message
@@ -30,4 +26,4 @@ jobs:
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           gh release create "${GITHUB_REF_NAME}" --title "Call Transcriber ${GITHUB_REF_NAME}" --notes-file notes.md \
-            Call-Transcriber-macOS.zip dist/CallTranscriber-Windows.zip
+            dist/CallTranscriber-Windows.zip
