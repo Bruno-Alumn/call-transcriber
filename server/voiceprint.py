@@ -14,16 +14,17 @@ for the same accuracy).
 The first voice we hear might itself be the video, so nobody is enrolled from a
 single utterance. Clean utterances that become lines are grouped into voices;
 the person is the voice with the most speech this session, and only once it has
-enough (several utterances, 20 s). Embeddings alone can't tell "a video, then the
+enough (several utterances, 30 s). Embeddings alone can't tell "a video, then the
 person" from "the person, then a video", so whenever it is unclear we flag
 nothing rather than risk hiding the person's own words:
 - the voice holding the voiceprint keeps it until another has 1.5x its speech,
   and does not fade while others talk (a long video doesn't wear it away);
   while another voice has more than 2/3 of its speech, nothing is flagged;
-- a voice that held the voiceprint for 40 s of its own speech is trusted and
-  never flagged again (if a video took over, the person's own lines stay
-  unflagged when they come back). A shorter hold is not trusted: that is how a
-  video heard first, before the person said anything, looks.
+- a voice that ever held the voiceprint is never flagged again: if a video
+  took over, the person's own lines stay unflagged when they come back. (If a
+  video heard first held it, it isn't flagged after the person takes over:
+  missing a video is the safer mistake.) Enrolment waits for 30 s of one voice
+  so that a short video intro rarely holds it at all.
 """
 
 import threading
@@ -44,10 +45,9 @@ MIN_S = 1.0          # shorter utterances are never judged (too little voice)
 CLEAN_S = 1.2        # only utterances this long shape the voices (our segmenter cuts at 0.7 s pauses, so most are short)
 MAX_S = 12.0         # longer audio is cropped to its middle (speed)
 ENROL_N = 4          # utterances, and
-ENROL_S = 20.0       # seconds of speech the person's voice needs before anything is flagged
+ENROL_S = 30.0       # seconds of speech the person's voice needs before anything is flagged
 LEAD = 1.5           # another voice needs this many times the holder's speech to take the voiceprint
 FADE = 0.995         # per clean utterance: old speech counts a little less (half after ~140)
-TRUST_S = 40.0       # seconds a voice speaks while holding the voiceprint before it is never flagged
 MAX_VOICES = 8
 
 
@@ -143,7 +143,7 @@ class Person:
     module notes for how a takeover is handled."""
 
     def __init__(self):
-        # [centroid (unit vector), seconds, utterances, seconds spoken while holding the voiceprint]
+        # [centroid (unit vector), seconds, utterances, has held the voiceprint]
         self.voices: list[list] = []
         self.holder = None                 # the voice whose centroid is the voiceprint
         self.flagged = self.judged = 0
@@ -168,6 +168,8 @@ class Person:
                 self.holder = top
         elif top[1] >= LEAD * self.holder[1]:
             self.holder = top
+        if self.holder is top:
+            top[3] = True
 
     def _learn(self, e: np.ndarray, secs: float):
         best = max(self.voices, key=lambda v: float(v[0] @ e), default=None)
@@ -180,23 +182,21 @@ class Person:
             best = joins
             c = best[0] * best[1] + e * secs
             best[0], best[1], best[2] = c / np.linalg.norm(c), best[1] + secs, best[2] + 1
-            if best is self.holder:
-                best[3] += secs
             # A voice can start as two groups (a laugh, a quieter stretch) that
             # grow together: merge them once their centres agree.
             twins = [v for v in self.voices if v is not best and float(v[0] @ best[0]) > SAME]
             for v in twins:
                 c = best[0] * best[1] + v[0] * v[1]
-                best[0], best[1], best[2], best[3] = c / np.linalg.norm(c), best[1] + v[1], best[2] + v[2], best[3] + v[3]
+                best[0], best[1], best[2], best[3] = c / np.linalg.norm(c), best[1] + v[1], best[2] + v[2], best[3] or v[3]
                 if v is self.holder:
                     self.holder = best
             self.voices = [v for v in self.voices if not any(v is t for t in twins)]
         else:
-            new = [e, secs, 1, 0.0]
+            new = [e, secs, 1, False]
             if len(self.voices) >= MAX_VOICES:
                 # Forget the least heard older voice: never the one just heard
-                # (it could never grow), the holder, or a trusted voice.
-                old = [v for v in self.voices if v is not self.holder and v[3] < TRUST_S] or \
+                # (it could never grow), the holder, or a former holder.
+                old = [v for v in self.voices if v is not self.holder and not v[3]] or \
                       [v for v in self.voices if v is not self.holder]
                 least = min(old, key=lambda v: v[1])
                 self.voices = [v for v in self.voices if v is not least]
@@ -211,8 +211,8 @@ class Person:
         if p is None:
             return False, None
         s = float(p @ e)
-        # Like a trusted voice (one that held the voiceprint a while)? Then it may be the person.
-        like_former = any(v[3] >= TRUST_S and float(v[0] @ e) >= BACKGROUND for v in self.voices)
+        # Like a voice that held the voiceprint before? Then it may be the person.
+        like_former = any(v[3] and float(v[0] @ e) >= BACKGROUND for v in self.voices)
         bg = secs >= MIN_S and s < BACKGROUND and not like_former
         self.judged += 1; self.flagged += bg
         return bg, s

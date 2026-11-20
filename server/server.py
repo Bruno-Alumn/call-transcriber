@@ -311,12 +311,11 @@ def build_calls(day: str, recs: list[dict]) -> list[dict]:
             talk[r["speaker"]] = talk.get(r["speaker"], 0) + (r["end"] - r["t"]) / 1000
             words += len(r["text"].split())
         people = sorted(talk.items(), key=lambda kv: -kv[1])
-        last = own or c["lines"]
         out.append({"id": f"{day}@{c['start']}", "day": day, "start": c["start"], "end": c["end"],
                     "ch": c["ch"], "chName": c["chName"], "guild": c["guild"], "guildName": c["guildName"],
                     "people": [p for p, _ in people], "lines": len(own), "words": words,
                     "total": len(c["lines"]),          # every line, background included (what a delete removes)
-                    "preview": next((r["text"] for r in reversed(last) if len(r["text"]) > 20), last[-1]["text"])[:120]})
+                    "preview": next((r["text"] for r in reversed(own) if len(r["text"]) > 20), own[-1]["text"] if own else "")[:120]})
     return out
 
 
@@ -1380,8 +1379,8 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
         if voice and keep:              # only speech that became a line shapes the voices (not music or noise)
             try:
                 bg = voices.judge(uid or who, voice.result(timeout=10), len(audio) / SR)
-            except Exception:
-                pass
+            except Exception as e:      # never lose a line over this
+                print("voiceprint error:", e, flush=True)
         written = []
         for part, a, b in keep:
             start = to_clock(marks, a)

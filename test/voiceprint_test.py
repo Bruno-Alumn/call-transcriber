@@ -86,11 +86,11 @@ def run(person, video, scenario, n_person=40, n_video=15):
     return c, vp
 
 
-def video_later(person, video, n_video):
-    """The person talks (25 x 3 s), a video plays (n_video x 4 s), the person talks
-    again (15 x 3 s). Returns (video lines flagged, later person lines flagged)."""
+def video_later(person, video, n_video, n_before=25):
+    """The person talks (n_before x 3 s), a video plays (n_video x 4 s), the person
+    talks again (15 x 3 s). Returns (video lines flagged, later person lines flagged)."""
     vp = V.Voiceprints(EMB)
-    before, after = pieces(person, 25, 3.0, 3.0), pieces(person, 15, 3.0, 3.0)
+    before, after = pieces(person, n_before, 3.0, 3.0), pieces(person, 15, 3.0, 3.0)
     vid = pieces(video, n_video, 4.0, 4.0)
     for a in before:
         vp.check("u", a)
@@ -176,7 +176,7 @@ def check_server_hooks():
     c = S.build_calls("d", day)[0]
     assert (c["lines"], c["total"], c["words"], c["preview"]) == (1, 2, 3, "Something Ann said."), c
     only = S.build_calls("d", [r for r in day if r.get("bg")])[0]
-    assert only["people"] == [] and only["lines"] == 0 and only["total"] == 1, only
+    assert only["people"] == [] and only["lines"] == 0 and only["total"] == 1 and only["preview"] == "", only
     print("server hooks: bg written, kept through the 2B rewrite, marked in the .md, left out of call stats: ok")
 
 
@@ -240,14 +240,14 @@ def main():
             fails.append(f"{sc}: miss rate after enrolment {100*vma:.1f}% > 20%")
     # A video playing for a while after the person has been enrolled: their own
     # later lines must not be flagged (the case that used to lose them).
-    p, v = pairs[0]
-    for n in (20, 40, 80):
-        vf, pf = video_later(spk[p], spk[v], n)
-        print(f"video later ({n} x 4 s): video lines flagged {vf}/{n}, person's later lines flagged {pf}/15")
-        if pf > 1:
-            fails.append(f"video later ({n}): {pf} of the person's later lines flagged")
-        if n == 20 and vf == 0:
-            fails.append("video later: no video line flagged")
+    for p, v in pairs[:3]:
+        for nb, n in ((25, 20), (25, 40), (25, 80), (12, 80)):
+            vf, pf = video_later(spk[p], spk[v], n, nb)
+            print(f"video later ({p}: {nb} x 3 s, then video {n} x 4 s): video lines flagged {vf}/{n}, person's later lines flagged {pf}/15")
+            if pf > 1:
+                fails.append(f"video later ({p}, {nb}, {n}): {pf} of the person's later lines flagged")
+            if nb == 25 and n == 20 and vf == 0:
+                fails.append("video later: no video line flagged")
     total, first_ok, still, owns = lock_in()
     print(f"lock-in (8 voices from a TV first): person flagged {total}/200, first unflagged at #{first_ok}, "
           f"{still} of the last 100 flagged, person holds the voiceprint at the end: {owns}")
