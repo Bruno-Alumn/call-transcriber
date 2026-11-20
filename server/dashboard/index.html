@@ -252,7 +252,9 @@ svg text { fill: var(--text-muted); font-size: 11px; font-family: inherit; }
 .pop button { flex: 1; font: inherit; font-size: 12.5px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-primary); cursor: pointer; }
 .pop button:hover { border-color: var(--text-muted); }
 .pop button.danger { color: var(--bad); }
-.res { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.res { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; }
+.res-pick { height: 22px !important; font-size: 11.5px; padding: 0 8px; margin-left: 4px; }
+.share .res-pick { display: none; }
 .res .m { background: var(--surface-2); border-radius: 10px; padding: 8px 10px; min-width: 0; }
 .res .m .l { color: var(--text-secondary); font-size: 11.5px; }
 .res .m .v { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
@@ -507,7 +509,7 @@ select, input[type=search] { border-radius: var(--radius); }
         <div class="pers" id="pers"></div>
       </div>
       <div class="card c-res" data-panel="resources" data-title="Resources">
-        <div class="head"><h2>Resources</h2><span class="meta">this Mac · updated every 2 s</span></div>
+        <div class="head"><h2>Resources</h2><span class="meta" id="res-meta">updated every 2 s</span><button class="iconbtn res-pick" id="res-pick" title="Choose what to show" aria-label="Choose metrics">Metrics</button></div>
         <div class="body"><div class="res" id="res"></div></div>
       </div>
       <div class="card c-talk" data-panel="talk" data-title="Talk time">
@@ -818,7 +820,7 @@ function appRelaunch(opts) {
   if (window.webkit?.messageHandlers?.app) return window.webkit.messageHandlers.app.postMessage({ action: 'relaunch', rebuild: !!opts.rebuildMac, deps: !!opts.deps });
 }
 const ago = (t) => { const s = Math.round((Date.now() - t) / 1000); return s < 5 ? 'just now' : fmtDur(s) + ' ago'; };
-const resHist = [];   // [{t, cpu, rss}] last 5 minutes
+const resHist = [];   // last 5 minutes of samples
 
 function extSummary(st) {
   const e = st.ext || {};
@@ -850,7 +852,7 @@ function renderState() {
     const initials = (p.name.replace(/[^\p{L}\p{N} ]/gu, '').trim().split(/\s+/).map((w) => w[0]).join('').slice(0, 2) || '?').toUpperCase();
     return `<span class="chip${p.talking ? ' talking' : ''}" title="${p.talking ? 'Talking now' : 'Last heard ' + fmtTime(p.lastSeen)}"><span class="sw" style="background:${c}"></span>${esc(p.name)}</span>`;
   }).join('') : '<span class="empty" style="padding:4px 0">No one yet</span>';
-  if (st.res?.cpu != null) { resHist.push({ t: st.now, cpu: st.res.cpu, rss: st.res.rssMB }); while (resHist.length && st.now - resHist[0].t > 300000) resHist.shift(); }
+  if (st.res?.cpu != null) { resHist.push({ t: st.now, ...st.res }); while (resHist.length && st.now - resHist[0].t > 300000) resHist.shift(); }
   renderResources(); refreshPop();
 }
 
@@ -860,18 +862,51 @@ function spark(vals, max) {
   const pts = vals.map((v, i) => `${(i / (n - 1)) * W},${H - 2 - (H - 4) * Math.min(1, v / max)}`).join(' ');
   return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;
 }
+// Resources: tiles you choose (Metrics button). Every number is measured by the
+// server the way the OS reports it; tiles with nothing to show on this machine hide.
+const gb = (mb) => (mb == null ? '–' : mb >= 1024 ? (mb / 1024).toFixed(2) + ' GB' : Math.round(mb) + ' MB');
+const pct = (v) => (v == null ? '–' : (v < 10 ? v.toFixed(1) : Math.round(v)) + '%');
+const METRICS = [
+  { id: 'cpu', name: 'CPU', on: true, has: (r) => r.cpuTotal != null, v: (r) => pct(r.cpuTotal), s: (r) => `speech ${pct(r.cpuServer)} · app and call windows ${pct(r.cpuApp)} · of all ${r.cores} cores`, h: 'cpuTotal', max: 25 },
+  { id: 'mem', name: 'Memory', on: true, has: (r) => r.memTotalMB != null, v: (r) => gb(r.memTotalMB), s: (r) => `speech ${gb(r.memServerMB)} · app and call windows ${gb(r.memAppMB)}`, h: 'memTotalMB' },
+  { id: 'model', name: 'Models', on: true, has: (r) => r.modelMB != null, v: (r) => gb(r.modelMB), s: (r) => (r.unified ? 'in shared memory (Apple Silicon)' : 'on the graphics card'), h: 'modelMB' },
+  { id: 'vram', name: 'VRAM', on: true, has: (r) => r.vramTotalMB != null, v: (r) => gb(r.vramUsedMB), s: (r) => `of ${gb(r.vramTotalMB)}${r.gpuName ? ' · ' + esc(r.gpuName) : ''} · all programs`, h: 'vramUsedMB' },
+  { id: 'gpu', name: 'GPU load', on: false, has: (r) => r.gpuLoad != null, v: (r) => pct(r.gpuLoad), s: () => 'whole graphics card', h: 'gpuLoad', max: 100 },
+  { id: 'sys', name: 'System memory', on: false, has: (r) => r.sysMemTotalMB != null, v: (r) => gb(r.sysMemUsedMB), s: (r) => `of ${gb(r.sysMemTotalMB)} · everything running`, h: 'sysMemUsedMB' },
+  { id: 'speed', name: 'Transcribing', on: true, has: () => true, v: (r) => (r.speed ? Math.round(r.speed) + '× live' : '–'), s: (r) => (r.latency != null ? 'text ' + r.latency.toFixed(1) + ' s after a line ends' : 'waiting for speech') },
+  { id: 'queue', name: 'Waiting', on: false, has: () => true, v: () => String(liveState?.queue ?? 0), s: () => `utterances in line${liveState?.refine ? ` · ${liveState.refineQueue || 0} for the 2B rewrite` : ''}` },
+  { id: 'heard', name: 'Heard', on: false, has: () => true, v: (r) => (r.audioMin != null ? r.audioMin + ' min' : '–'), s: () => 'of speech since the server started' },
+];
+let resChoice = null;
+try { resChoice = JSON.parse(localStorage.getItem('ct-res-metrics') || 'null'); } catch {}
+const resShown = (m) => (resChoice ? resChoice.includes(m.id) : m.on);
 function renderResources() {
   const r = liveState?.res;
   if (!r) { $('#res').innerHTML = '<div class="empty" style="grid-column:1/-1;padding:8px">Server not running</div>'; return; }
   if (r.cpu == null) { $('#res').innerHTML = '<div class="empty" style="grid-column:1/-1;padding:8px">Measuring…</div>'; return; }
-  const cpus = resHist.map((h) => h.cpu), rss = resHist.map((h) => h.rss || 0);
-  const cpuMax = Math.max(25, ...cpus), rssMax = Math.max(...rss, 1) * 1.15;
-  const avgCpu = cpus.length ? cpus.reduce((a, b) => a + b, 0) / cpus.length : r.cpu;
-  $('#res').innerHTML = `
-    <div class="m"><div class="l">CPU</div><div class="v">${r.cpu.toFixed(0)}%</div><div class="s">avg ${avgCpu.toFixed(0)}% · of 1 core (${r.cores})</div>${spark(cpus, cpuMax)}</div>
-    <div class="m"><div class="l">Memory</div><div class="v">${r.rssMB != null ? (r.rssMB / 1024).toFixed(2) + ' GB' : '–'}</div><div class="s">model ${r.modelMB != null ? (r.modelMB / 1024).toFixed(2) + ' GB' : '–'}</div>${spark(rss, rssMax)}</div>
-    <div class="m"><div class="l">Transcribing</div><div class="v">${r.speed ? Math.round(r.speed) + '× live' : '–'}</div><div class="s">${r.latency != null ? 'text ' + r.latency.toFixed(1) + ' s after a line ends' : 'waiting for speech'} · ${r.audioMin} min heard</div></div>`;
+  const tiles = METRICS.filter((m) => resShown(m) && m.has(r));
+  $('#res').innerHTML = tiles.map((m) => {
+    const hist = m.h ? resHist.map((x) => x[m.h] || 0) : null;
+    const sp = hist && hist.length > 1 ? spark(hist, Math.max(m.max || 0, ...hist) * 1.15 || 1) : '';
+    return `<div class="m"><div class="l">${m.name}</div><div class="v">${m.v(r)}</div><div class="s">${m.s(r)}</div>${sp}</div>`;
+  }).join('') || '<div class="empty" style="grid-column:1/-1;padding:8px">No metrics chosen</div>';
 }
+document.addEventListener('click', (e) => {
+  const b = e.target.closest?.('#res-pick'); if (!b) return;
+  e.stopPropagation();
+  const r = liveState?.res || {};
+  const pop = $('#pop'); popFor = null;   // (not one of the status popovers that refresh themselves)
+  pop.innerHTML = `<h3>Show in Resources</h3>${METRICS.map((m) => `<label class="srow"><span><b>${m.name}</b><small>${m.has(r) ? '' : 'not available on this computer'}</small></span><input type="checkbox" data-metric="${m.id}" ${resShown(m) ? 'checked' : ''} ${m.has(r) ? '' : 'disabled'}></label>`).join('')}
+    <div class="hint">Memory counts Earshot's own processes, as your system's activity monitor reports them.</div>`;
+  pop.style.display = 'block';
+  const rr = b.getBoundingClientRect();
+  pop.style.left = Math.max(12, Math.min(rr.left, innerWidth - pop.offsetWidth - 12)) + 'px'; pop.style.top = (rr.bottom + 8) + 'px';
+  pop.querySelectorAll('[data-metric]').forEach((x) => x.onchange = () => {
+    resChoice = [...pop.querySelectorAll('[data-metric]:checked')].map((y) => y.dataset.metric);
+    try { localStorage.setItem('ct-res-metrics', JSON.stringify(resChoice)); } catch {}
+    renderResources();
+  });
+});
 
 // popovers for the status pills
 let popFor = null;
@@ -989,7 +1024,7 @@ document.addEventListener('click', (e) => {
   if (b.dataset.desk === 'mute') desk.setMuted(!appState.muted);
 });
 $('#p-model').onclick = (e) => { e.stopPropagation(); loadModels(); openPop('model', e.currentTarget); };
-document.addEventListener('click', (e) => { if (popFor && !$('#pop').contains(e.target)) closePop(); });
+document.addEventListener('click', (e) => { if ($('#pop').style.display === 'block' && !$('#pop').contains(e.target) && !e.target.closest?.('#res-pick')) closePop(); });
 addEventListener('keydown', (e) => { if (e.key === 'Escape') closePop(); });
 
 // ------------------------------------------------------------ updates

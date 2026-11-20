@@ -18,6 +18,7 @@ import gc
 import json
 import os
 import queue
+import shutil
 import signal
 import subprocess
 import re
@@ -511,6 +512,7 @@ class Hub:
         self.conns: dict = {}             # ws -> {account, role, userId, label, since, capturing}
         self.uid_owner: dict = {}         # person -> (connection, last chunk time): one source per person
         self.res: dict = {}
+        self.parent_pid = 0
         self.audio_s = self.proc_s = 0.0             # transcription throughput
         self.latency: deque = deque(maxlen=50)        # s from end of speech to text
         self.people: dict[str, "Segmenter"] = {}
@@ -613,28 +615,94 @@ class Hub:
                         "audioMin": round(self.audio_s / 60, 1)}}
 
     def sample_resources(self):
-        """Every 2 s: this server's CPU % (of one core), memory, and model memory."""
-        last_cpu, last_t = time.process_time(), time.time()
+        """Every 2 s, what Earshot uses, measured the way the OS reports it:
+        the speech server, the app and its call windows (the app is this
+        server's parent process and its helpers), model / GPU memory, and the
+        machine as a whole."""
+        import psutil
+        procs: dict[int, psutil.Process] = {}
+        cores = os.cpu_count() or 1
+        last_gpu, gpu = 0.0, {}
+
+        def mem(p: psutil.Process) -> float:
+            """Bytes of memory a process really uses (Activity Monitor's / Task Manager's number)."""
+            if sys.platform == "darwin":
+                fp = phys_footprint(p.pid)
+                if fp:
+                    return fp
+            mi = p.memory_info()
+            return getattr(mi, "private", 0) or mi.rss          # Windows: private bytes
+
+        def tracked(pid: int):
+            if pid not in procs:
+                p = psutil.Process(pid)
+                p.cpu_percent(None)                                 # first call primes the counter
+                procs[pid] = p
+            return procs[pid]
+
         while True:
             time.sleep(2)
-            cpu, t = time.process_time(), time.time()
-            pct = 100 * (cpu - last_cpu) / max(1e-6, t - last_t)
-            last_cpu, last_t = cpu, t
             try:
-                import psutil
-                rss = psutil.Process().memory_info().rss / 2**20
-            except Exception:
-                rss = None
-            mlx = None
-            try:
-                if "mlx.core" in sys.modules:
-                    mlx = sys.modules["mlx.core"].get_active_memory() / 2**20
+                me = tracked(os.getpid())
+                app_pids: list[int] = []
+                if self.parent_pid and psutil.pid_exists(self.parent_pid):
+                    parent = psutil.Process(self.parent_pid)
+                    app_pids = [parent.pid] + [c.pid for c in parent.children(recursive=True) if c.pid != me.pid
+                                               and c.pid not in {x.pid for x in me.children(recursive=True)}]
+                server_pids = [me.pid] + [c.pid for c in me.children(recursive=True)]
+                live = set(server_pids + app_pids)
+                for pid in list(procs):
+                    if pid not in live:
+                        procs.pop(pid, None)
+                cpu_s = mem_s = cpu_a = mem_a = 0.0
+                for pid in server_pids:
+                    try:
+                        p = tracked(pid); cpu_s += p.cpu_percent(None); mem_s += mem(p)
+                    except psutil.Error:
+                        pass
+                for pid in app_pids:
+                    try:
+                        p = tracked(pid); cpu_a += p.cpu_percent(None); mem_a += mem(p)
+                    except psutil.Error:
+                        pass
+                vm = psutil.virtual_memory()
+                model = vram_used = vram_total = None
+                if "mlx.core" in sys.modules:                         # Apple Silicon: GPU memory is shared memory
+                    mx = sys.modules["mlx.core"]
+                    model = mx.get_active_memory() + mx.get_cache_memory()
                 elif "torch" in sys.modules and sys.modules["torch"].cuda.is_available():
-                    mlx = sys.modules["torch"].cuda.memory_allocated() / 2**20
-            except Exception:
-                pass
-            self.res = {"cpu": round(pct, 1), "rssMB": round(rss) if rss else None, "modelMB": round(mlx) if mlx else None,
-                        "cores": os.cpu_count()}
+                    torch = sys.modules["torch"]
+                    model = torch.cuda.memory_reserved()
+                    free, total = torch.cuda.mem_get_info()
+                    vram_used, vram_total = total - free, total       # every program's use of the card
+                if time.time() - last_gpu > 5 and shutil.which("nvidia-smi"):
+                    last_gpu = time.time()
+                    try:
+                        out = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total,name",
+                                              "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=3,
+                                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout.splitlines()[0]
+                        u, used, tot, name = [x.strip() for x in out.split(",", 3)]
+                        gpu = {"gpuLoad": float(u), "gpuName": name}
+                        vram_used, vram_total = float(used) * 2**20, float(tot) * 2**20
+                    except Exception:
+                        gpu = {}
+                elif gpu and vram_used is None:
+                    pass
+                MB = lambda b: round(b / 2**20) if b else None
+                self.res = {
+                    "cores": cores,
+                    "cpu": round(cpu_s, 1),                                         # speech server, % of one core
+                    "cpuServer": round(cpu_s / cores, 1), "cpuApp": round(cpu_a / cores, 1),
+                    "cpuTotal": round((cpu_s + cpu_a) / cores, 1),                  # % of the whole processor
+                    "memServerMB": MB(mem_s), "memAppMB": MB(mem_a), "memTotalMB": MB(mem_s + mem_a),
+                    "rssMB": MB(mem_s + mem_a),
+                    "modelMB": MB(model), "unified": "mlx.core" in sys.modules,
+                    "vramUsedMB": MB(vram_used), "vramTotalMB": MB(vram_total), **gpu,
+                    "sysMemUsedMB": MB(vm.total - vm.available), "sysMemTotalMB": MB(vm.total),
+                    "appProcs": len(app_pids),
+                }
+            except Exception as e:
+                self.res = {**self.res, "error": str(e)[:120]}
 
     def tell_extensions(self, msg: dict):   # safe to call from any thread
         data = json.dumps(msg)
@@ -726,6 +794,26 @@ def models_here() -> list[dict]:
         out.append({**{k: v for k, v in m.items() if k != "repos"}, "engine": eng, "repo": m["repos"].get(eng) if eng else None,
                     "available": bool(eng), "stats": m.get("bench", {}).get(eng) if eng else None})
     return out
+
+
+def phys_footprint(pid: int) -> int | None:
+    """macOS: a process's physical footprint, the memory figure Activity Monitor
+    shows (RSS misses GPU buffers that MLX models live in)."""
+    try:
+        import ctypes, ctypes.util
+        lib = ctypes.CDLL(ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib")
+        class RUsageV2(ctypes.Structure):
+            _fields_ = [("uuid", ctypes.c_uint8 * 16)] + [(n, ctypes.c_uint64) for n in (
+                "user_time", "system_time", "pkg_idle_wkups", "interrupt_wkups", "pageins", "wired_size", "resident_size",
+                "phys_footprint", "proc_start_abstime", "proc_exit_abstime", "child_user_time", "child_system_time",
+                "child_pkg_idle_wkups", "child_interrupt_wkups", "child_pageins", "child_elapsed_abstime",
+                "diskio_bytesread", "diskio_byteswritten")]
+        buf = RUsageV2()
+        if lib.proc_pid_rusage(ctypes.c_int(pid), ctypes.c_int(2), ctypes.byref(buf)) == 0:
+            return int(buf.phys_footprint)
+    except Exception:
+        pass
+    return None
 
 
 def model_plan() -> dict:
@@ -1436,6 +1524,7 @@ async def main():
     hub.refine_id, hub.refine_loading, hub.refined = None, None, 0
     hub.queue = q
     hub.loop = asyncio.get_running_loop()
+    hub.parent_pid = args.parent_pid
     threading.Thread(target=hub.sample_resources, daemon=True).start()
     writer = Writer(hub)
     writer.q = q
