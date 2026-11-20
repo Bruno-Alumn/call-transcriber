@@ -47,7 +47,7 @@ const isDashUrl = (u) => typeof u === 'string' && (u.startsWith(BASE) || u.start
 
 function request(pathname, { method = 'GET', timeout = 1000, app: appHeader = false } = {}) {
   return new Promise((resolve) => {
-    const req = http.request(BASE + pathname.replace(/^\//, ''), { method, timeout, headers: appHeader ? { 'X-CT': '1' } : {} }, (res) => {
+    const req = http.request(BASE + pathname.replace(/^\//, ''), { method, timeout, agent: false, headers: { ...(appHeader ? { 'X-CT': '1' } : {}), ...(method === 'POST' ? { 'Content-Length': 0 } : {}) } }, (res) => {
       let body = ''; res.on('data', (d) => (body += d)); res.on('end', () => resolve({ status: res.statusCode, body }));
     });
     req.on('error', () => resolve(null)); req.on('timeout', () => { req.destroy(); resolve(null); });
