@@ -384,10 +384,14 @@ function setupDiscordSession(a) {
   ses.setUserAgent(chromeUserAgent());
   const listener = () => acct(a.id)?.role === 'listener';
   const allowed = new Set(['media', 'notifications', 'clipboard-sanitized-write', 'clipboard-read', 'fullscreen', 'speaker-selection', 'display-capture']);
-  const diag = TEST ? process.env.CT_DIAG || '' : '';
-  const ok = (perm, url) => allowed.has(perm) && isDiscordUrl(url || '') && !(listener() && !diag.includes('nodeny') && (perm === 'media' || perm === 'display-capture'));
-  ses.setPermissionRequestHandler((_wc, perm, cb, details) => cb(ok(perm, details.requestingUrl)));
-  ses.setPermissionCheckHandler((_wc, perm, origin) => ok(perm, origin));
+  // Listener accounts: refuse the real microphone and camera only. (Refusing all of
+  // "media" also stalls audio playback on machines without a sound output device.)
+  const input = (types) => types.some((t) => t === 'audio' || t === 'video');
+  const ok = (perm, url, types = []) => allowed.has(perm) && isDiscordUrl(url || '')
+    && !(listener() && (perm === 'display-capture' || (perm === 'media' && input(types))));
+  const log = TEST && process.env.CT_PERMLOG ? (...x) => console.log('PERM', a.role, ...x) : () => {};
+  ses.setPermissionRequestHandler((_wc, perm, cb, details) => { const r = ok(perm, details.requestingUrl, details.mediaTypes || []); log('request', perm, JSON.stringify(details.mediaTypes || []), r); cb(r); });
+  ses.setPermissionCheckHandler((_wc, perm, origin, details) => { const r = ok(perm, origin, [details?.mediaType].filter(Boolean)); log('check', perm, details?.mediaType, r); return r; });
   // Screen share ("Share Your Screen" / Go Live): our own picker, which also
   // offers the transcriber itself — a clean compact view of this account's call.
   ses.setDisplayMediaRequestHandler(async (_req, cb) => {
@@ -507,7 +511,7 @@ function createDiscord(a, { show = true, url } = {}) {
   });
   r.win = w; r.capturing = true;
   const wc = w.webContents;
-  wc.setAudioMuted(!!a.muted && !(TEST && (process.env.CT_DIAG || '').includes('unmuted')));
+  wc.setAudioMuted(!!a.muted);
   wc.on('will-navigate', (e, u) => { if (!isDiscordUrl(u)) { e.preventDefault(); openExternal(u); } });
   wc.on('will-redirect', (e, u) => { if (!isDiscordUrl(u)) { e.preventDefault(); openExternal(u); } });
   wc.setWindowOpenHandler(({ url: u }) => { openExternal(u); return { action: 'deny' }; });
