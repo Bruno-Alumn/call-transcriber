@@ -1143,6 +1143,39 @@ def load_engine(engine: str, repo: str, language: str | None):
                 pieces = ctc_pieces(ids, len(audio), lambda t: tok.decode(t, skip_special_tokens=True), blank)
                 return {"text": "".join(p[0] for p in pieces).strip(), "pieces": pieces}
             return run_ctc
+        if "granite-speech" in repo.lower() and language == "en":      # Granite 2B, English only
+            # model.generate takes no logits processors, so this runs its own
+            # (non-streaming, greedy) decoding steps with a mask that forbids
+            # tokens which aren't plain ASCII: the model can't drift into
+            # another language's words or script. Same prompt as generate().
+            from mlx_audio.lm.generate import generate_step
+            gs = sys.modules[type(model).__module__]
+            tok = model._tokenizer
+            ask = gs._resolve_prompt("asr", None, None, punctuate=True)
+            system = gs.PLUS_SYSTEM_PROMPT if model.is_plus else None
+            mask = None
+            def only_english(tokens, logits):
+                nonlocal mask
+                if mask is None:
+                    m = english_mask(tok, logits.shape[-1])
+                    for i in [tok.eos_token_id, *getattr(tok, "all_special_ids", [])]:
+                        if i is not None and i < len(m):
+                            m[i] = True
+                    mask = mx.array(np.where(m, 0.0, -np.inf).astype(np.float32))
+                return logits.astype(mx.float32) + mask
+            def run_en(audio):
+                feats, n_audio = model._extract_features(model._load_audio(mx.array(audio)))
+                audio_feats = model.get_audio_features(feats)
+                ids = model._build_prompt(n_audio, ask, system_prompt=system)
+                embeds = model._build_inputs_embeds(ids, audio_feats)
+                out = []
+                for t, _ in generate_step(prompt=ids, input_embeddings=embeds.squeeze(0), model=model,
+                                          max_tokens=4096, logits_processors=[only_english]):
+                    if t == tok.eos_token_id:
+                        break
+                    out.append(t)
+                return tok.decode(out, skip_special_tokens=True)
+            return run_en
         def run(audio):
             out = model.generate(mx.array(audio), **kw)
             return out.text if hasattr(out, "text") else out if isinstance(out, str) else ""
@@ -1183,10 +1216,24 @@ def load_engine(engine: str, repo: str, language: str | None):
             ask = "<|audio|>transcribe the speech with proper punctuation and capitalization."
             prompt = tok.apply_chat_template([{"role": "user", "content": ask}],
                                              tokenize=False, add_generation_prompt=True)
+            gen = {}
+            if language == "en":                         # English only: forbid tokens that aren't plain ASCII
+                from transformers import LogitsProcessor, LogitsProcessorList
+                class OnlyEnglish(LogitsProcessor):
+                    bad = None
+                    def __call__(self, input_ids, scores):
+                        if self.bad is None:
+                            m = english_mask(tok, scores.shape[-1])
+                            for i in [tok.eos_token_id, *tok.all_special_ids]:
+                                if i is not None and i < len(m):
+                                    m[i] = True
+                            self.bad = torch.from_numpy(~m).to(scores.device)
+                        return scores.masked_fill(self.bad, -float("inf"))
+                gen["logits_processor"] = LogitsProcessorList([OnlyEnglish()])
             def run(audio):
                 with torch.inference_mode():
                     inp = proc(prompt, torch.from_numpy(audio).unsqueeze(0), device=dev, return_tensors="pt").to(dev)
-                    out = model.generate(**inp, max_new_tokens=200, do_sample=False, num_beams=1)
+                    out = model.generate(**inp, max_new_tokens=200, do_sample=False, num_beams=1, **gen)
                     return tok.batch_decode(out[:, inp["input_ids"].shape[-1]:], skip_special_tokens=True)[0]
             return run
         if "qwen3-asr" in low:                               # Qwen3-ASR (52 languages)
