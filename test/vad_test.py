@@ -310,5 +310,23 @@ for name, x in (("talking (white noise, rms 0.03)", white(20)), ("open mic, quie
     ms = (time.perf_counter() - t) / (len(x) / CHUNK) * 1000
     print(f"  {name:32s} {ms:.2f} ms per chunk per person = {ms / 2:.2f}% of the server's event-loop thread")
 
+# A scrap of quiet sound long before someone speaks must not become the start of
+# their line (a line once "lasted" 39 minutes this way).
+import queue as _q
+_out = _q.Queue(); _seg = S.Segmenter(_out, 0.01, "late", vad_threshold=None)
+_quiet = np.zeros(1600, np.float32) + 0.001
+_loud = (np.sin(np.arange(1600) / 5) * 0.3).astype(np.float32)
+_seg.push(1_000_000, _quiet)
+_t1 = 1_000_000 + 39 * 60_000
+for i in range(20): _seg.push(_t1 + i * 100, _loud)
+for i in range(12): _seg.push(_t1 + 2000 + i * 100, _quiet)
+_seg.flush()
+_starts = []
+while not _out.empty(): _starts.append(_out.get()[0])
+if not _starts or any(abs(x - _t1) > 1000 for x in _starts):
+    failures.append(f"old lead-in glued to a line: starts {[round((x - _t1) / 1000) for x in _starts]} s from the speech")
+else:
+    print("  a line starts where its speech does, not at old sound before a long pause: ok")
+
 print("\nFAIL:\n  " + "\n  ".join(failures) if failures else "\nPASS")
 sys.exit(1 if failures else 0)

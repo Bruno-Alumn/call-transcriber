@@ -175,6 +175,7 @@ class Segmenter:
         self.last_end = t + dur
         if gap > 300:
             self.vad.reset()                     # unrelated audio follows: start the VAD fresh
+            self.pre.clear()                     # and the sound before the gap is no lead-in to it
             if self.cur or self.carry:
                 self.silent_ms += gap
                 if self.silent_ms >= self.silence_ms:
@@ -212,7 +213,8 @@ class Segmenter:
                 self.flush()
                 self.carry = True                # mid-speech cut: the rest is the same person still talking
         elif speech:
-            self.cur = list(self.pre) + [(t, pcm)]
+            # the lead-in: only the sound just before this, never something left from long ago
+            self.cur = [(pt, pp) for pt, pp in self.pre if t - pt <= self.preroll_ms + 50] + [(t, pcm)]
             self.pre.clear()
             self.silent_ms = 0
             self.voiced_ms = voiced * VAD_WINDOW / SR * 1000
@@ -397,6 +399,15 @@ def load_day(day: str) -> list[dict]:
                 continue
             words = max(1, len(text.split()))
             recs.append({"t": t, "end": t + int(words / 2.6 * 1000), "user": "", "speaker": who, "text": text})
+    # Lines written before the lead-in fix could start minutes early (a scrap of old
+    # sound was glued to the front): a few words can't take minutes, so such a line
+    # starts where its words could have (about 2.6 words a second, at least 1.5 s).
+    for r in recs:
+        span = r.get("end", r["t"]) - r["t"]
+        if span > 30000 and r.get("text"):
+            need = max(1500, len(r["text"].split()) / 2.6 * 1000)
+            if span > need * 4:
+                r["t"] = int(r["end"] - need)
     gone = {x for r in recs for x in (r.get("replaces") or [])}   # lines the 2B pass rewrote
     if gone or any(r.get("tomb") for r in recs):
         recs = [r for r in recs if not r.get("tomb") and r.get("id") not in gone]
