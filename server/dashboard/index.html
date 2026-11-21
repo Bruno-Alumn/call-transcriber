@@ -454,6 +454,16 @@ body.compact #feedmeta { display: none; }
 .tr .tc:hover { border-color: var(--border); background: var(--surface-2); }
 .tr .tc svg { width: 14px; height: 14px; color: var(--text-muted); flex: none; }
 .tr .tc em { margin-left: auto; font-style: normal; font-size: 11.5px; color: var(--text-muted); }
+.tr .tc-row { display: flex; align-items: center; gap: 4px; }
+.tr .tc-row .tc { flex: 1; min-width: 0; }
+.tr .tc-row .tc > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tr .flag { flex: none; display: grid; place-items: center; width: 30px; height: 30px; border: 1px solid transparent;
+  border-radius: 4px; background: transparent; cursor: pointer; color: var(--text-muted); opacity: .4; }
+.tr .flag:hover { border-color: var(--border); background: var(--surface-2); opacity: .85; }
+.tr .flag svg { width: 15px; height: 15px; }
+.tr .flag.on { opacity: 1; }
+.tr .flag.auto.on { color: #3987e5; }
+.tr .flag.fav.on { color: #e3b341; }
 /* settings */
 .modal.settings .sh { font-size: 11.5px; font-weight: 600; color: var(--text-muted); margin: 14px 0 4px; }
 .modal.settings .sh:first-child { margin-top: 0; }
@@ -1654,6 +1664,8 @@ $('#export').onclick = () => { const c = currentCall(); if (c) chooseFormat({ la
 let calls = [], selected = 'live';          // call id, or 'live' = follow the current call
 const dayCache = new Map();                 // day -> lines
 const CH_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 2.5a.6.6 0 0 1 1 .45v10.1a.6.6 0 0 1-1 .45L4.9 10.8H2.6A.6.6 0 0 1 2 10.2V5.8c0-.33.27-.6.6-.6h2.3L8 2.5Zm3.1 2.2a.6.6 0 0 1 .85.05 5 5 0 0 1 0 6.5.6.6 0 1 1-.9-.8 3.8 3.8 0 0 0 0-4.9.6.6 0 0 1 .05-.85Z"/></svg>';
+const BOLT_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M9.2 1.3 3.4 8.6a.5.5 0 0 0 .4.8h2.9l-1 5.1a.4.4 0 0 0 .73.3l5.8-7.3a.5.5 0 0 0-.4-.8H8.9l1-5.1a.4.4 0 0 0-.73-.3Z"/></svg>';
+const STAR_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1.6l1.76 3.56 3.94.57-2.85 2.78.67 3.92L8 10.96l-3.52 1.85.67-3.92L2.3 5.73l3.94-.57L8 1.6z"/></svg>';
 // Several calls can be live at once (one per account/voice channel).
 const liveChannels = () => new Set([...(liveState?.accounts || []).filter((a) => a.inCall && a.channel?.id).map((a) => a.channel.id),
   ...(liveState?.ext?.inCall && liveState.ext.channel?.id ? [liveState.ext.channel.id] : [])]);
@@ -2093,7 +2105,8 @@ async function openSettings() {
     <div class="pbody">
       ${as ? `<div class="sh">App</div>
         ${tog('app:openAtLogin', 'Open at login', as.openAtLogin, 'Starts transcribing as soon as you sign in to your computer.')}
-        ${tog('app:showCallWindowOnStart', 'Show the call window on start', as.showCallWindowOnStart, 'Off: it opens hidden and stays connected.')}` : ''}
+        ${tog('app:showCallWindowOnStart', 'Show the call window on start', as.showCallWindowOnStart, 'Off: it opens hidden and stays connected.')}
+        ${tog('app:autoJoin', 'Auto-join open channels', as.autoJoin, 'A free account joins a channel you flagged (the blue icon in Channels) while it is open and not full, and moves on after ' + Math.round((window.__autoIdle || 180) / 60) + ' min of silence. Discord\'s terms forbid automating accounts, so use your own judgement. Off by default.')}` : ''}
       ${tog('ui:compact', 'Compact view', compact, 'Everything on one screen.')}
       <div class="sh">Transcription</div>
       <div class="srow"><span><b>Speech model</b><small>${esc(model)}</small></span><button data-a="model">Change…</button></div>
@@ -2154,7 +2167,7 @@ function accountLine(a) {
 function accountsHtml() {
   const list = appState.accounts || [];
   return `<h3 style="margin-top:14px">Accounts</h3><div class="accts">${list.map(accountLine).join('')}</div>
-    <div class="btns"><button data-desk="transcribe">Transcribe a channel…</button><button data-desk="add">Add account</button></div>
+    <div class="btns"><button data-desk="transcribe">Channels…</button><button data-desk="add">Add account</button></div>
     <div class="hint">Listener accounts have no microphone and start with sound off. Each account signs in once in its own window.</div>`;
 }
 document.addEventListener('click', async (e) => {
@@ -2206,10 +2219,15 @@ async function openProxy(id) {
   input.focus();
 }
 window.openProxy = openProxy;
-// "Transcribe a channel": pick a voice channel; the next free account opens it with Join Voice highlighted.
+// "Transcribe a channel" / auto-join: pick a voice channel for a free account to
+// open (you click Join Voice), and set its two flags — blue to let free accounts
+// join it automatically while it is open and not full, yellow to favourite it so
+// it sorts to the top here and is tried first for auto-join.
 async function openTranscribe() {
   if (!desk?.accounts) return;
   const info = await desk.accounts();
+  let flags = (desk.channelFlags ? await desk.channelFlags() : null) || {};
+  const as = desk.appSettings ? await desk.appSettings() : null;
   const bg = $('#modal'), box = bg.firstElementChild;
   box.classList.add('persona');
   const close = () => { bg.style.display = 'none'; box.classList.remove('persona'); removeEventListener('keydown', key); };
@@ -2217,15 +2235,23 @@ async function openTranscribe() {
   addEventListener('keydown', key);
   bg.onclick = (e) => { if (e.target === bg) close(); };
   const busy = new Map((info.accounts || []).filter((a) => a.inCall && a.channel).map((a) => [a.channel.id, a]));
+  const favOf = (id) => (flags[id]?.fav ? 1 : 0);
   const render = (q = '') => {
     const ql = q.toLowerCase();
-    const gs = (info.guilds || []).map((g) => ({ ...g, channels: g.channels.filter((c) => !ql || (g.name + ' ' + c.name).toLowerCase().includes(ql)) })).filter((g) => g.channels.length);
+    const gs = (info.guilds || []).map((g) => ({ ...g,
+      channels: g.channels.filter((c) => !ql || (g.name + ' ' + c.name).toLowerCase().includes(ql))
+        .slice().sort((a, b) => favOf(b.id) - favOf(a.id) || a.name.localeCompare(b.name)) })).filter((g) => g.channels.length);
     const free = (info.accounts || []).filter((a) => !a.inCall).length;
-    box.innerHTML = `<h3>Transcribe a channel</h3><div class="psub">${free} of ${(info.accounts || []).length} accounts free · the app opens the channel, you click Join Voice</div>
+    const ajNote = as ? (as.autoJoin ? 'Auto-join is on in Settings.' : 'Turn Auto-join on in Settings to use the blue flag.') : '';
+    box.innerHTML = `<h3>Channels</h3><div class="psub">${free} of ${(info.accounts || []).length} accounts free · ${esc(ajNote)}</div>
       <input type="search" id="tq" placeholder="Search servers and channels…" value="${esc(q)}" style="width:100%;margin-bottom:8px">
       <div class="pbody tr">${gs.map((g) => `<div class="tg">${esc(g.name)}</div>${g.channels.map((c) => {
-        const b = busy.get(c.id);
-        return `<button class="tc" data-g="${esc(g.id)}" data-c="${esc(c.id)}">${CH_ICON}<span>${esc(c.name)}</span>${b ? `<em>${esc(b.label)} is ${b.capturing ? 'transcribing' : 'in'} it</em>` : ''}</button>`;
+        const b = busy.get(c.id), f = flags[c.id] || {};
+        return `<div class="tc-row">
+          <button class="tc" data-g="${esc(g.id)}" data-c="${esc(c.id)}" title="Open this channel for a free account to join">${CH_ICON}<span>${esc(c.name)}</span>${b ? `<em>${esc(b.label)} is ${b.capturing ? 'transcribing' : 'in'} it</em>` : ''}</button>
+          <button class="flag auto${f.auto ? ' on' : ''}" data-c="${esc(c.id)}" data-key="auto" aria-pressed="${!!f.auto}" title="Auto-join: let a free account join ${esc(c.name)} automatically when it is open and not full" aria-label="Auto-join ${esc(c.name)} when open">${BOLT_ICON}</button>
+          <button class="flag fav${f.fav ? ' on' : ''}" data-c="${esc(c.id)}" data-key="fav" aria-pressed="${!!f.fav}" title="Favourite: sort ${esc(c.name)} to the top and try it first" aria-label="Favourite ${esc(c.name)}">${STAR_ICON}</button>
+        </div>`;
       }).join('')}`).join('') || `<p>${(info.guilds || []).length ? 'No matches.' : 'No servers yet. Each account lists its servers a few seconds after it signs in.'}</p>`}</div>
       <div class="pnote" id="tmsg"></div>
       <div class="btns"><button data-a="add">Add account</button><button data-a="close">Close</button></div>`;
@@ -2236,6 +2262,12 @@ async function openTranscribe() {
       const r = await desk.transcribe(b.dataset.g, b.dataset.c);
       if (r?.error) { box.querySelector('#tmsg').textContent = r.error; return; }
       close();
+    });
+    box.querySelectorAll('.flag').forEach((b) => b.onclick = async () => {
+      const id = b.dataset.c, k = b.dataset.key, on = !(flags[id]?.[k]);
+      flags[id] = { ...(flags[id] || {}), [k]: on };
+      if (desk.setChannelFlag) flags = (await desk.setChannelFlag(id, k, on)) || flags;
+      render(box.querySelector('#tq')?.value || '');
     });
   };
   bg.style.display = 'grid';

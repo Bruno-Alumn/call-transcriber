@@ -7,7 +7,7 @@
 // chunks tagged with the user id + display name to content.js.
 (() => {
   if (window.__dtHook) return;
-  window.__dtHook = { version: 12, tracks: 0, chunks: 0, errors: [], loadedAt: document.readyState, pcs: 0, badStreamIds: [] };
+  window.__dtHook = { version: 13, tracks: 0, chunks: 0, errors: [], loadedAt: document.readyState, pcs: 0, badStreamIds: [] };
   const H = window.__dtHook;
   // Discord's end-to-end voice encryption logs this when it can't decrypt a
   // frame. A burst of them while every track is silent means the call audio is
@@ -140,6 +140,27 @@
       const ids = vs instanceof Map ? [...vs.keys()] : Array.isArray(vs) ? vs.map((v) => v?.userId) : Object.keys(vs);
       return ids.filter((id) => typeof id === 'string' && /^\d{15,22}$/.test(id) && id !== me);
     } catch (e) { H.storeDiag.presErr = String(e).slice(0, 80); return null; }
+  }
+  // Channels the app wants occupancy for (the ones flagged for auto-join).
+  let watchIds = [];
+  // How many people are in a channel right now, and its user limit (0 = none).
+  // Count real people only — not this account itself. Used to decide whether an
+  // open channel is worth auto-joining and whether it still has a free slot.
+  function channelOcc(id) {
+    const st = findStores();
+    let count = 0, limit = 0;
+    try {
+      const me = st?.user?.getCurrentUser?.()?.id;
+      const vs = st?.voice?.getVoiceStatesForChannel?.(id);
+      if (vs) {
+        const ids = vs instanceof Map ? [...vs.keys()] : Array.isArray(vs) ? vs.map((v) => v?.userId) : Object.keys(vs);
+        count = ids.filter((u) => typeof u === 'string' && /^\d{15,22}$/.test(u) && u !== me).length;
+      }
+      const ch = st?.channels?.getChannel?.(id);
+      const l = ch?.userLimit ?? ch?.user_limit;
+      if (typeof l === 'number' && l > 0) limit = l;
+    } catch (e) { H.storeDiag.occErr = String(e).slice(0, 80); }
+    return { id, count, limit };
   }
   function meInfo() {
     const st = findStores(); if (!st) return null;
@@ -424,6 +445,7 @@
       ctx: ctx ? ctx.state : 'none', enabled, live: H.live, liveIds: inChannelIds() ?? [...new Set([...readers.values()].map((r) => r.userId).filter(Boolean))], names: H.names, nameVia: H.nameVia,
       badStreamIds: H.badStreamIds, dupDropped: H.dupDropped || 0, errors: [...new Set(H.errors)].slice(-5),
       storeDiag: H.storeDiag, unnamedRows: H.unnamedRows, channel: currentChannel(), me: meInfo(),
+      occ: watchIds.length ? watchIds.map(channelOcc) : undefined,
       unnamedLive: [...readers.values()].filter((r) => r.userId && !idName.has(r.userId)).map((r) => r.userId),
     } }, location.origin);
   }, 5000);
@@ -432,5 +454,6 @@
     if (e.source !== window || !e.data?.__dtControl) return;
     if ('enabled' in e.data) { enabled = !!e.data.enabled; H.enabled = enabled; }
     if (e.data.directory) window.postMessage({ __dtDirectory: directory() }, location.origin);
+    if (Array.isArray(e.data.watch)) watchIds = e.data.watch.filter((x) => typeof x === 'string').slice(0, 50);
   });
 })();
