@@ -225,6 +225,14 @@ body:not(.compact) .lcol > .card.grow:not([data-panel="transcript"]) { min-heigh
 .line.bg .who { opacity: .6; }
 .audio-lost { margin: 0 14px 10px; padding: 8px 10px; border-radius: 6px; font-size: 12.5px; line-height: 1.45; color: var(--text-primary); background: color-mix(in srgb, #e5484d 14%, transparent); border: 1px solid color-mix(in srgb, #e5484d 45%, transparent); }
 .audio-lost[hidden] { display: none; }
+.call.sel { outline: 2px solid var(--accent); outline-offset: -2px; background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.call .merged { color: var(--text-muted); }
+.merge-bar { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); background: var(--surface-1); font-size: 12.5px; }
+.merge-bar[hidden] { display: none; }
+.merge-bar span { flex: 1; color: var(--text-secondary); min-width: 0; }
+.merge-bar button { font: inherit; border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary); border-radius: 6px; padding: 5px 10px; cursor: pointer; white-space: nowrap; }
+.merge-bar button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.merge-bar button:disabled { opacity: .5; cursor: default; }
 .bgtag { font-size: 10.5px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; margin-left: 6px; white-space: nowrap; vertical-align: 1px; }
 @keyframes flash { from { background: color-mix(in srgb, var(--accent) 16%, transparent); } to { background: transparent; } }
 /* questions and answers */
@@ -546,6 +554,7 @@ select, input[type=search] { border-radius: var(--radius); }
     <input type="search" id="hq" placeholder="Search all calls…" aria-label="Search all calls">
   </div>
   <div class="calls" id="calls"><div class="empty">No calls yet</div></div>
+  <div class="merge-bar" id="merge-bar" hidden><span id="merge-n"></span><button class="ghost" id="merge-cancel">Cancel</button><button class="primary" id="merge-go">Merge</button></div>
 </aside>
 <div class="app">
   <header>
@@ -757,12 +766,8 @@ function renderFeed(onlyAppend = false, around = null) {
   }
 }
 // ------------------------------------------------------------ questions and answers
-// A line whose last sentence ends in "?" is a question. Its answer is the next
-// line by someone else within 20 s of it. A question that names someone ("Theo,
-// can you...") takes that person's reply first. Each line answers at most
-// one question (the latest open one), and a quick follow-up question by the same
-// person replaces the one before it. Questions nobody answered say so.
-const QA_WINDOW = 20000;
+// A line ending in "?" may be a question (filler like "right?" never is); the
+// server decides which really are, and what answers them.
 const TAG_Q = /^(right|yeah|yes|no|huh|what|really|ok|okay|wait|sorry|eh|hm+|you know|isn't it|is it)\?$/i;
 let lineIdx = new Map(), shownLines = [], qa = { q: new Map(), a: new Map() };
 const qCache = new WeakMap();
@@ -778,44 +783,51 @@ function questionIn(r) {
   qCache.set(r, q);
   return q;
 }
-const nameRe = new Map();      // first name -> RegExp, compiled once
-function nameRegex(n) {
-  if (!nameRe.has(n)) nameRe.set(n, new RegExp(`(^|[^\\p{L}\\p{N}])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^\\p{L}\\p{N}]|$)`, 'u'));
-  return nameRe.get(n);
-}
 let qaMemo = null, qaGen = 0;  // qaGen goes up whenever names or keys change (rebuildKeys)
-// live calls wait a little longer before "no answer": an answer can take a few
-// seconds to come back from the speech model
-const QA_WAIT = QA_WINDOW + 10000;
+// Which lines are real questions and which line answers each comes from the
+// server, where a local model reads each question with what was said around it
+// (see /api/qa). Rhetorical questions get no mark; a real question nobody
+// answered says so; one not judged yet says it's being checked.
+let qaJudged = new Map(), qaInfo = { available: false }, qaVer = 0, qaFetching = false;
+async function fetchQA() {
+  const c = currentCall(); if (!c || qaFetching || SHARE) return;
+  qaFetching = true;
+  try {
+    const one = new Set(partsOf(c).map((p) => p.ch)).size === 1;
+    const q = new URLSearchParams({ days: daysOf(c).join(','), from: c.start, to: isLiveCall(c) ? 0 : c.end, ch: one ? (c.ch || '') : '' });
+    const r = await fetch('/api/qa?' + q).then((x) => x.json());
+    qaInfo = r;
+    let changed = false;
+    for (const [id, v] of Object.entries(r.judged || {})) {
+      const o = qaJudged.get(id);
+      if (!o || o.real !== v.real || o.answer !== v.answer) { qaJudged.set(id, v); changed = true; }
+    }
+    if (changed) { qaVer++; paintQA(); const st = stats(); renderTimeline(st); }
+    else if (document.querySelector('#feed .qa.wait')) paintQA();
+  } catch {} finally { qaFetching = false; }
+}
+setInterval(() => { if (serverSettings?.qaLinks !== false) fetchQA(); }, 8000);
 function qaLinks() {
-  const live = isToday(), now = Date.now();
-  const m = qaMemo;
-  if (m && m.lines === lines && m.len === lines.length && m.gen === qaGen && m.live === live && !(m.waitUntil && now >= m.waitUntil)) return m.res;
-  const q = new Map(), a = new Map(), open = [];
-  const people = [...new Set(lines.map((r) => keyOf.get(r)))].map((k) => [k, (nameFor(k).match(/[\p{L}\p{N}]{3,}/u) || [''])[0].toLowerCase()]).filter(([, n]) => n);
-  const addressee = (text, asker) => { const t = text.toLowerCase(); for (const [k, n] of people) if (k !== asker && nameRegex(n).test(t)) return k; return null; };
-  for (const r of lines) {
-    if (r.bg) continue;
-    const k = keyOf.get(r);
-    for (let i = open.length - 1; i >= 0; i--) if (r.t - open[i].r.end > QA_WINDOW) { q.set(open[i].r, null); open.splice(i, 1); }
-    const cands = open.filter((o) => o.k !== k && r.t > o.r.t + 300);
-    const o = cands.filter((c) => c.to === k).pop() || cands.filter((c) => !c.to).pop() || cands.pop();   // someone else may answer for the person named
-    if (o) { q.set(o.r, r); a.set(r, o.r); open.splice(open.indexOf(o), 1); }
-    const text = questionIn(r);
-    if (text) {
-      const prev = open.findLastIndex((c) => c.k === k);
-      if (prev >= 0 && r.t - open[prev].r.end < 8000) { q.delete(open[prev].r); open.splice(prev, 1); }
-      open.push({ r, k, to: addressee(text, k) });
+  const m = qaMemo, on = serverSettings?.qaLinks !== false;
+  if (m && m.lines === lines && m.len === lines.length && m.gen === qaGen && m.ver === qaVer && m.on === on && m.avail === qaInfo.available) return m.res;
+  const q = new Map(), a = new Map();
+  if (on) {
+    const byId = new Map(lines.filter((r) => r.id).map((r) => [r.id, r]));
+    // newest first, so when several questions claim one answer the closest one before it keeps it
+    for (const r of [...lines].reverse()) {
+      if (r.bg || !r.id || !questionIn(r)) continue;
+      const j = qaJudged.get(r.id);
+      if (j) {
+        if (!j.real) continue;                                   // rhetorical, a joke, an exclamation
+        let ans = j.answer ? byId.get(j.answer) : null;
+        if (ans && a.has(ans)) ans = null;                      // one line answers one question (the closest before it)
+        q.set(r, ans || null);
+        if (ans) a.set(ans, r);
+      } else if (qaInfo.available) q.set(r, 'wait');            // not judged yet
     }
   }
-  let waitUntil = 0;
-  for (const o of open) {
-    const wait = live && now - o.r.end < QA_WAIT;
-    q.set(o.r, wait ? 'wait' : null);
-    if (wait) waitUntil = waitUntil ? Math.min(waitUntil, o.r.end + QA_WAIT) : o.r.end + QA_WAIT;
-  }
   const res = { q, a };
-  qaMemo = { lines, len: lines.length, gen: qaGen, live, waitUntil, res };
+  qaMemo = { lines, len: lines.length, gen: qaGen, ver: qaVer, on, avail: qaInfo.available, res };
   return res;
 }
 function paintQA() {
@@ -828,9 +840,9 @@ function paintQA() {
     if (qa.a.has(r)) h += `<button class="qa" data-go="${lineIdx.get(qa.a.get(r))}" title="Go to the question this answers">answers ${who(qa.a.get(r))}</button>`;
     if (qa.q.has(r)) {
       const ans = qa.q.get(r);
-      h += ans === 'wait' ? '<span class="qa wait" title="Asked a moment ago; an answer may still come">waiting for an answer</span>'
+      h += ans === 'wait' ? '<span class="qa wait" title="A local model reads it with what was said around it, once others have had time to reply">checking for an answer</span>'
         : ans ? `<button class="qa" data-go="${lineIdx.get(ans)}" title="Go to the answer">answered by ${who(ans)}</button>`
-        : '<span class="qa none" title="No reply from someone else within 20 seconds">no answer</span>';
+        : '<span class="qa none" title="Nobody answered it, judging by what was said after it">no answer</span>';
     }
     if (slot.innerHTML !== h) slot.innerHTML = h;
   });
@@ -1554,7 +1566,7 @@ function render(fmt, sections, title) {
 }
 async function exportCalls(group, fmt) {
   const sections = [];
-  for (const c of group.calls) sections.push({ call: c, lines: linesOf(c, await dayLines(c.day)).filter(own) });   // background voices only with "Show normally"
+  for (const c of group.calls) sections.push({ call: c, lines: linesOf(c, await loadCallRecs(c)).filter(own) });   // background voices only with "Show normally"
   sections.sort((a, b) => a.call.start - b.call.start);
   const [ext, , , mime] = FORMATS.find((f) => f[0] === fmt);
   const first = sections[0]?.call;
@@ -1584,7 +1596,7 @@ const CH_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="current
 // Several calls can be live at once (one per account/voice channel).
 const liveChannels = () => new Set([...(liveState?.accounts || []).filter((a) => a.inCall && a.channel?.id).map((a) => a.channel.id),
   ...(liveState?.ext?.inCall && liveState.ext.channel?.id ? [liveState.ext.channel.id] : [])]);
-const isLiveCall = (c) => !!c && c.day === today() && Date.now() - c.end < GAP && (c === calls[0] || (!!c.ch && liveChannels().has(c.ch)));
+const isLiveCall = (c) => !!c && lastDay(c) === today() && Date.now() - c.end < GAP && (c === calls[0] || (!!c.ch && liveChannels().has(c.ch)));
 const liveCallCount = () => calls.filter(isLiveCall).length;
 const currentCall = () => selected === 'live' ? calls[0] : calls.find((c) => c.id === selected);
 const isToday = () => isLiveCall(currentCall());    // "viewing live" for the charts
@@ -1634,9 +1646,9 @@ function tree(list, cur, prefix) {
       for (const c of ch.calls) {
         const lv = isLiveCall(c);
         const ppl = [...new Set(c.people.map(bySuffix))];
-        html += `<button class="call${c === cur ? ' on' : ''}" data-id="${esc(c.id)}" data-kind="call" data-key="${esc(c.id)}" data-label="${esc(ch.name + ' · ' + dayLabel(c.day) + ' ' + fmtHM(c.start))}" data-arch="${esc(c.archived || '')}">
+        html += `<button class="call${c === cur ? ' on' : ''}${mergeSel.has(c.id) ? ' sel' : ''}" aria-pressed="${mergeSel.has(c.id)}" data-parts="${partsOf(c).length}" data-id="${esc(c.id)}" data-kind="call" data-key="${esc(c.id)}" data-label="${esc(ch.name + ' · ' + dayLabel(c.day) + ' ' + fmtHM(c.start))}" data-arch="${esc(c.archived || '')}">
           <div class="t1"><span class="ch">${dayLabel(c.day)}</span>${lv ? '<span class="badge">LIVE</span>' : ''}</div>
-          <div class="t2">${fmtHM(c.start)} to ${lv ? 'now' : fmtHM(c.end)} · ${fmtDur((c.end - c.start) / 1000)}</div>
+          <div class="t2">${fmtHM(c.start)} to ${lv ? 'now' : fmtHM(c.end)} · ${fmtDur((c.end - c.start) / 1000)}${partsOf(c).length > 1 ? ` · <span class="merged" title="Right-click to split it back">${partsOf(c).length} calls merged</span>` : ''}</div>
           <div class="t3"><span class="faces">${ppl.slice(0, 4).map((p) => `<span title="${esc(p)}">${esc(initialsOf(p))}</span>`).join('')}</span>${ppl.length} ${ppl.length === 1 ? 'person' : 'people'} · ${c.words.toLocaleString()} words</div>
         </button>`;
       }
@@ -1656,7 +1668,11 @@ function renderCalls() {
     if (archOpen) html += `<div class="archived-tree">${tree(archived, cur, 'a/')}</div>`;
   }
   box.innerHTML = html;
-  box.querySelectorAll('.call').forEach((el) => el.onclick = () => openCall(el.dataset.id));
+  box.querySelectorAll('.call').forEach((el) => el.onclick = (e) => {
+    // ⌘/Ctrl/Shift-click, or any click while picking: choose calls to merge
+    if (e.metaKey || e.ctrlKey || e.shiftKey || mergeSel.size) return toggleMergeSel(el.dataset.id);
+    openCall(el.dataset.id);
+  });
   box.querySelectorAll('.srv, .chn').forEach((el) => el.onclick = () => {
     const g = el.dataset.g;
     if (closedGroups.has(g)) closedGroups.delete(g); else closedGroups.add(g);
@@ -1665,6 +1681,28 @@ function renderCalls() {
   const ah = $('#archhead');
   if (ah) ah.onclick = () => { archOpen = !archOpen; try { localStorage.setItem('ct-arch-open', archOpen ? '1' : '0'); } catch {} renderCalls(); };
 }
+
+// ---- merging calls: pick two or more, then Merge (undo with "Split back")
+const mergeSel = new Set();
+const toast = (msg) => window.earshot.ui.toast(msg);
+function toggleMergeSel(id) { mergeSel.has(id) ? mergeSel.delete(id) : mergeSel.add(id); renderMergeBar(); renderCalls(); }
+function renderMergeBar() {
+  const bar = $('#merge-bar'), n = mergeSel.size;
+  bar.hidden = !n;
+  $('#merge-n').textContent = n < 2 ? 'Pick another call to merge with' : `${n} calls picked`;
+  $('#merge-go').disabled = n < 2;
+  $('#merge-go').textContent = n < 2 ? 'Merge' : `Merge ${n} calls`;
+}
+$('#merge-cancel').onclick = () => { mergeSel.clear(); renderMergeBar(); renderCalls(); };
+$('#merge-go').onclick = async () => {
+  if (mergeSel.size < 2) return;
+  const r = await api('/api/merge?ids=' + encodeURIComponent([...mergeSel].join(','))).catch(() => null);
+  mergeSel.clear(); renderMergeBar();
+  if (!r?.ok) { toast(r?.error ? 'Could not merge: ' + r.error : 'Could not merge those calls.'); renderCalls(); return; }
+  dayCache.clear(); await loadCalls(); await openCall(r.id);
+  toast(`Merged ${r.parts} calls into one.`);
+};
+addEventListener('keydown', (e) => { if (e.key === 'Escape' && mergeSel.size) { mergeSel.clear(); renderMergeBar(); renderCalls(); } });
 
 // ---- right-click: archive / unarchive / delete
 const api = (path) => fetch(path, { headers: { 'X-CT': '1' } }).then((r) => r.json());
@@ -1678,7 +1716,12 @@ $('#calls').addEventListener('contextmenu', (e) => {
   const items = [];
   if (arch) items.push(['unarchive', arch.startsWith(kind + ':') ? `Unarchive ${what}` : 'Unarchive (restores the whole archived group)']);
   else items.push(['archive', `Archive ${what}`]);
-  if (kind === 'call') items.push(['open', 'Open']);
+  if (kind === 'call') {
+    items.push(['open', 'Open']);
+    items.push(['merge', mergeSel.size && !mergeSel.has(key) ? 'Add to the calls to merge' : 'Merge with other calls…']);
+    const parts = +(el.dataset.parts || 1);
+    if (parts > 1) items.push(['unmerge', `Split back into ${parts} calls`]);
+  }
   items.push(['export', `Export ${what}…`]);
   items.push(['sep']);
   items.push(['delete', `Delete ${what}…`, 'danger']);
@@ -1692,6 +1735,8 @@ $('#calls').addEventListener('contextmenu', (e) => {
     closeCtx();
     const a = b.dataset.a;
     if (a === 'open') return openCall(key);
+    if (a === 'merge') { mergeSel.add(key); renderMergeBar(); renderCalls(); if (mergeSel.size < 2) toast('Now click the other calls to merge with it, then press Merge.'); return; }
+    if (a === 'unmerge') { await api('/api/unmerge?id=' + encodeURIComponent(key)); dayCache.clear(); }
     if (a === 'export') {
       const group = calls.filter((c) => kind === 'call' ? c.id === key : kind === 'channel' ? (c.chKey || chKey(c)) === key : (c.srvKey || srvKey(c)) === key);
       return chooseFormat({ label, calls: group });
@@ -1997,6 +2042,7 @@ async function openSettings() {
       <div class="srow"><span><b>Language</b><small>English only. Both models are held to English words, so they never switch to another language.</small></span></div>
       <div class="sh">Personality reads</div>
       ${tog('personality', 'Personality reads', ss.personality !== false, 'The Read buttons and the compact-mode panel. Written by a local model.')}
+      ${tog('qaLinks', 'Link questions to answers', ss.qaLinks !== false, 'The small local model used for personality reads (LFM3) thinks through each question with what was said around it, skips rhetorical ones, and finds the line that answers it, if any.')}
       <div class="sh">Updates</div>
       ${tog('autoUpdate', 'Check for updates automatically', ss.autoUpdate !== false, `Version ${esc(upd?.current || '—')}. Checks when the app starts and every 6 hours.`)}
       <div class="sh">Plugins</div>
@@ -2019,6 +2065,7 @@ async function openSettings() {
     if (r.error) { msg(r.error); return; }
     await loadServerSettings();
     if (k === 'background') renderAll();
+    if (k === 'qaLinks') { qaMemo = null; paintQA(); renderTimeline(stats()); if (v) fetchQA(); }
     msg(k === 'language' ? 'Saved. The model reloads with the new language.' : 'Saved.');
   });
   box.querySelector('[data-a="close"]').onclick = close;
@@ -2138,7 +2185,7 @@ async function personaRead(k) {
   async function run(fresh = false) {
     if (personaInfo && !personaInfo.available) { frame('', `<p>${esc(personaInfo.reason || 'Not available on this computer.')}</p>`); return; }
     frame('Starting…', '<div class="pwait"><span class="s"></span>Reading what they said…</div>');
-    const q = new URLSearchParams({ day: c.day, from: c.start, to: c.end, ch: c.ch || '', user, name: speaker || name, ...(fresh ? { fresh: '1' } : {}) });
+    const q = new URLSearchParams({ day: daysOf(c).join(','), from: c.start, to: c.end, ch: new Set(partsOf(c).map((p) => p.ch)).size === 1 ? (c.ch || '') : '', user, name: speaker || name, ...(fresh ? { fresh: '1' } : {}) });
     const r = await fetch('/api/persona/start?' + q, { method: 'POST', headers: { 'X-CT': '1' } }).then((x) => x.json()).catch((e) => ({ error: String(e) }));
     if (closed) return;
     if (r.error) { frame('', `<p>${esc(r.error)}</p>`); return; }
@@ -2218,7 +2265,7 @@ async function refreshPers() {
   try {
     for (const p of persCandidates()) {
       const user = /^\d{15,22}$/.test(p.k) ? p.k : '';
-      const q = new URLSearchParams({ day: c.day, from: c.start, to: c.end, ch: c.ch || '', user, name: user ? nameFor(p.k) : String(p.k).replace(/^name:/, '') });
+      const q = new URLSearchParams({ day: daysOf(c).join(','), from: c.start, to: c.end, ch: new Set(partsOf(c).map((p) => p.ch)).size === 1 ? (c.ch || '') : '', user, name: user ? nameFor(p.k) : String(p.k).replace(/^name:/, '') });
       const r = await fetch('/api/persona/start?' + q, { method: 'POST', headers: { 'X-CT': '1' } }).then((x) => x.json()).catch(() => null);
       if (!r || r.error) continue;
       if (!persOverview.get(p.k)?.sentence) { persOverview.set(p.k, { status: 'working' }); renderPers(); }
@@ -2250,6 +2297,13 @@ function confirmBox(title, body, note, okLabel) {
   });
 }
 
+// A call can be several merged calls ("parts"), possibly on different days.
+const partsOf = (c) => c.parts?.length ? c.parts : [{ id: c.id, day: c.day, start: c.start, end: c.end, ch: c.ch }];
+const daysOf = (c) => [...new Set(partsOf(c).map((p) => p.day))];
+const lastDay = (c) => partsOf(c).at(-1).day;
+// the lines of every day a call touches, from the cache (call loadCallRecs first)
+const callRecs = (c) => { const ds = daysOf(c); return ds.length === 1 ? (dayCache.get(ds[0]) || []) : ds.flatMap((d) => dayCache.get(d) || []).sort((a, b) => a.t - b.t); };
+async function loadCallRecs(c, fresh = false) { await Promise.all(daysOf(c).map((d) => dayLines(d, fresh))); return callRecs(c); }
 async function dayLines(d, fresh = false) {
   if (!fresh && dayCache.has(d)) return dayCache.get(d);
   const recs = await fetch('/api/day?d=' + d).then((r) => r.json()).catch(() => []);
@@ -2257,7 +2311,8 @@ async function dayLines(d, fresh = false) {
   return recs;
 }
 function linesOf(c, recs) {
-  return recs.filter((r) => r.t >= c.start && r.t <= c.end && (!r.ch || !c.ch || r.ch === c.ch));
+  const ps = partsOf(c);
+  return recs.filter((r) => ps.some((p) => r.t >= p.start && r.t <= p.end && (!r.ch || !p.ch || r.ch === p.ch)));
 }
 function renderWhere() {
   const c = currentCall();
@@ -2270,9 +2325,10 @@ async function showCall(fresh = false) {
   const c = currentCall();
   if ((c?.id || null) !== shownCallId) { shownCallId = c?.id || null; chartView.act = chartView.tl = null; }
   if (!c) { allLines = []; lines = []; renderWhere(); renderCalls(); return renderAll(); }
-  allLines = await dayLines(c.day, fresh);
+  allLines = await loadCallRecs(c, fresh);
   lines = linesOf(c, allLines);
   renderWhere(); renderCalls(); renderAll();
+  fetchQA();
   emit('call', c);
 }
 function reveal(c) { if (c) { closedGroups.delete(srvKey(c)); closedGroups.delete(chKey(c)); saveClosed(); } }
@@ -2298,7 +2354,7 @@ async function loadCalls() {
   if (calls[0] && calls[0].id !== prevTop && isLiveCall(calls[0])) reveal(calls[0]);
   if (selected !== 'live' && !calls.some((c) => c.id === selected)) selected = 'live';
   if (SHARE_CH) {                     // shared view of one account's call: follow that channel
-    const c = calls.find((x) => x.ch === SHARE_CH && x.day === today());
+    const c = calls.find((x) => partsOf(x).some((p) => p.ch === SHARE_CH && p.day === today()));
     if (c) selected = c.id;
   }
 }
@@ -2369,13 +2425,12 @@ function connect() {
       const d = today(), gone = new Set(m.ids || []);
       if (dayCache.has(d)) { const arr = dayCache.get(d).filter((r) => !gone.has(r.id)); arr.push(...(m.lines || [])); arr.sort((a, b) => a.t - b.t); dayCache.set(d, arr); }
       const c = currentCall();
-      if (c && c.day === d) {
-        // keep the reader where they are unless they were following the newest line
-        allLines = dayCache.get(d) || allLines; lines = linesOf(c, allLines); renderAll();   // renderFeed keeps the reader's place
+      if (c && daysOf(c).includes(d)) {
+        allLines = callRecs(c); lines = linesOf(c, allLines); renderAll();   // renderFeed keeps the reader's place
       }
       // the sidebar's line and word counts for calls that changed
-      for (const cc of calls) if (cc.day === d && dayCache.has(d)) {
-        const ls = linesOf(cc, dayCache.get(d)).filter((x) => !x.bg);   // as the server counts them
+      for (const cc of calls) if (daysOf(cc).includes(d) && daysOf(cc).every((x) => dayCache.has(x))) {
+        const ls = linesOf(cc, callRecs(cc)).filter((x) => !x.bg);   // as the server counts them
         if ((m.lines || []).some((x) => x.t >= cc.start && x.t <= cc.end)) { cc.lines = ls.length; cc.words = ls.reduce((n, x) => n + x.text.split(/\s+/).length, 0); }
       }
       renderCalls();
@@ -2387,18 +2442,20 @@ function connect() {
       const d = today();
       if (dayCache.has(d)) { const arr = dayCache.get(d); arr.push(m); arr.sort((a, b) => a.t - b.t); }
       // the call this line belongs to: the open call in its channel (several can run at once)
-      const top = (m.ch && calls.find((c) => c.day === d && c.ch === m.ch && m.t - c.end < GAP))
-        || (calls[0] && calls[0].day === d && m.t - calls[0].end < GAP && (!m.ch || !calls[0].ch) ? calls[0] : null);
+      const partFor = (c) => partsOf(c).find((p) => p.day === d && (m.ch ? p.ch === m.ch : true) && m.t - p.end < GAP);
+      const top = (m.ch && calls.find((c) => partFor(c) && partsOf(c).some((p) => p.ch === m.ch)))
+        || (calls[0] && lastDay(calls[0]) === d && m.t - calls[0].end < GAP && (!m.ch || !calls[0].ch) ? calls[0] : null);
       const extends_ = !!top;
       if (extends_) {
         top.end = Math.max(top.end, m.end);
+        const part = partFor(top); if (part) part.end = Math.max(part.end, m.end);
         if (!m.bg) {                    // background voices aren't counted as the person's (as the server does)
           top.lines++; top.words += m.text.split(/\s+/).length;
           if (!top.people.includes(m.speaker)) top.people.push(m.speaker);
         }
         if (m.ch && !top.ch) Object.assign(top, { ch: m.ch, chName: m.chName, guildName: m.guildName });
         if ((selected === 'live' && top === calls[0]) || selected === top.id) {
-          lines = linesOf(top, dayCache.get(d) || []);
+          lines = linesOf(top, callRecs(top));
           const atEnd = lines[lines.length - 1] === m;
           rebuildKeys(); const s = stats(); renderKPIs(s); renderBars(s); renderWords(); renderWhere();
           if (atEnd && !filter && !query) renderFeed(true); else renderFeed();

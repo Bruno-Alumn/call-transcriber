@@ -6,7 +6,7 @@ names, voice channel), and checks the transcript.
 
   python test/server_e2e.py [--engine onnx|mlx|torch|auto]
 """
-import argparse, asyncio, base64, json, os, re, subprocess, sys, tempfile, time, urllib.request
+import argparse, asyncio, base64, json, os, re, subprocess, sys, tempfile, time, urllib.request, urllib.parse
 from pathlib import Path
 import numpy as np, soundfile as sf, websockets
 
@@ -77,7 +77,7 @@ def main():
                 sys.exit("model switch never finished")
             print("now running:", st["modelId"], st["engine"], st["model"])
         if args.models:
-            req = urllib.request.Request(f"http://127.0.0.1:{PORT}/api/models/select?ids={args.models}", headers={"X-CT": "1"})
+            req = urllib.request.Request(f"http://127.0.0.1:{PORT}/api/models/select?ids={urllib.parse.quote(args.models, safe='')}", headers={"X-CT": "1"})
             print("models:", json.load(urllib.request.urlopen(req, timeout=10)))
             for _ in range(900):
                 st = get("/api/state")
