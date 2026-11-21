@@ -17,8 +17,10 @@ jobs:
         with: { node-version: 22 }
       - name: App + dashboard JavaScript
         run: |
-          for f in app/desktop/*.js test/app-test.js test/multi-test.js; do node --check "$f"; done
+          for f in app/desktop/*.js test/app-test.js test/multi-test.js test/proxy-app-test.js test/proxy-test.js; do node --check "$f"; done
           node -e "const s=require('fs').readFileSync('server/dashboard/index.html','utf8'); new Function(s.slice(s.indexOf('<script>')+8, s.lastIndexOf('</script>'))); console.log('dashboard ok')"
+      - name: Proxy parsing test
+        run: node test/proxy-test.js
       - name: Python
         run: python3 -m py_compile server/server.py server/voiceprint.py app/windows/call_transcriber.pyw test/server_e2e.py test/vad_test.py test/voiceprint_test.py test/force_english_test.py test/merge_test.py
 
@@ -85,6 +87,9 @@ jobs:
         shell: bash
         env: { SERVER_ARGS: "--engine onnx" }
         run: node test/multi-test.js "$RUNNER_TEMP/multi-test"
+      - name: Per-account proxy test (separate sessions, Webshare format)
+        shell: bash
+        run: node test/proxy-app-test.js "$RUNNER_TEMP/proxy-test"
 
   build-mac:
     name: Build macOS app + Windows package

@@ -7,11 +7,12 @@
 //    injected before Discord's scripts run and each person's audio is relayed
 //    to the server here.
 const { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, powerSaveBlocker,
-  session, shell, desktopCapturer, systemPreferences } = require('electron');
+  session, shell, desktopCapturer, systemPreferences, safeStorage } = require('electron');
 const { spawn, execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const { parseProxy, redactProxy, proxyLogin } = require('./proxy');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const SERVER_DIR = path.join(ROOT, 'server');
@@ -162,9 +163,25 @@ function loadAccounts() {
   try { list = JSON.parse(fs.readFileSync(accountsFile(), 'utf8')); } catch {}
   if (!Array.isArray(list) || !list.length) list = [{ id: 'main', role: 'main', partition: 'persist:discord', muted: !!loadSettings().muted }];
   if (!list.some((a) => a.role === 'main')) list[0].role = 'main';
+  for (const a of list) {                 // proxy credentials are encrypted at rest when the OS can
+    if (!a.proxyEnc) continue;
+    try { const v = safeStorage.decryptString(Buffer.from(a.proxyEnc, 'base64')); if (v) { a.proxy = v; delete a.proxyEnc; } }
+    catch {}                              // keep it: the account shows a proxy that needs attention
+  }
   return list;
 }
-function saveAccounts() { try { fs.writeFileSync(accountsFile(), JSON.stringify(accounts, null, 1)); } catch {} }
+function saveAccounts() {
+  try {
+    const enc = (() => { try { return safeStorage.isEncryptionAvailable(); } catch { return false; } })();
+    const out = accounts.map(({ proxy, proxyEnc, ...rest }) => {
+      if (!proxy) return proxyEnc ? { ...rest, proxyEnc } : rest;
+      if (!enc) return { ...rest, proxy };
+      try { return { ...rest, proxyEnc: safeStorage.encryptString(proxy).toString('base64') }; }
+      catch { return { ...rest, proxy }; }
+    });
+    fs.writeFileSync(accountsFile(), JSON.stringify(out, null, 1));
+  } catch {}
+}
 const acct = (id) => accounts.find((a) => a.id === id);
 const mainAccount = () => accounts.find((a) => a.role === 'main') || accounts[0];
 const R = (id) => { if (!rt.has(id)) rt.set(id, { win: null, ws: null, wsOpen: false, capturing: true, status: null, statusAt: 0 }); return rt.get(id); };
@@ -175,6 +192,15 @@ function accountOfSender(e) {
   for (const a of accounts) {
     const w = winOf(a.id);
     if (w && e.sender === w.webContents && e.senderFrame === w.webContents.mainFrame && isDiscordUrl(e.senderFrame.url)) return a;
+  }
+  return null;
+}
+
+function accountOfWebContents(wc) {
+  if (!wc) return null;
+  for (const a of accounts) {
+    const w = winOf(a.id);
+    if (w && w.webContents === wc) return a;
   }
   return null;
 }
@@ -209,11 +235,14 @@ function broadcast() {
 function accountSummary(a) {
   const r = rt.get(a.id) || {}, s = r.status || {}, fresh = Date.now() - (r.statusAt || 0) < 15000;
   const self = fresh ? s.me?.self : null;
+  const px = a.proxyEnc ? { ok: false } : parseProxy(a.proxy);
   return { id: a.id, role: a.role, label: nameOf(a), signedIn: !!a.userId, userId: a.userId || null,
     open: !!winOf(a.id), visible: !!winOf(a.id)?.isVisible(), connected: !!r.wsOpen, muted: !!a.muted,
     inCall: fresh && !!s.pcs && !!s.tracks, channel: fresh ? s.channel || null : null, capturing: r.capturing !== false,
     deafened: !!(self && (self.deaf || self.selfDeaf)), hint: r.hint || null,
-    guilds: (a.directory || []).length };
+    guilds: (a.directory || []).length,
+    proxy: px.ok && (px.proxy || px.pac) ? redactProxy(a.proxy) : '',
+    proxyMode: !px.ok ? 'invalid' : px.proxy ? 'proxy' : px.pac ? 'pac' : px.direct ? 'direct' : 'system' };
 }
 const appState = () => {
   const m = mainAccount();
@@ -361,6 +390,7 @@ ipcMain.handle('ct:transcribe', (e, guildId, channelId) => (fromDash(e) ? transc
 ipcMain.handle('ct:add-account', (e) => (fromDash(e) ? addAccount() : null));
 ipcMain.handle('ct:remove-account', (e, id) => (fromDash(e) ? removeAccount(String(id)) : null));
 ipcMain.handle('ct:set-role', (e, id, role) => (fromDash(e) ? setRole(String(id), role === 'main' ? 'main' : 'listener') : null));
+ipcMain.handle('ct:set-proxy', (e, id, value) => (fromDash(e) ? setAccountProxy(String(id), String(value == null ? '' : value)) : null));
 
 function setPaused(on) { paused = on; broadcast(); buildMenu(); }
 
@@ -407,6 +437,60 @@ function createDashboard() {
 function chromeUserAgent() {
   // Look like plain Chrome (Discord shows an "unsupported browser" notice otherwise).
   return app.userAgentFallback.split(' ').filter((t) => !/^(Electron|CallTranscriber|call-transcriber)\//i.test(t)).join(' ');
+}
+
+// ----------------------------------------------------------------- proxy
+// Each account's Discord window has its own session, so a proxy set here
+// applies to that account only (sign-in, pages, API, gateway). Chromium's
+// proxy rules cannot carry credentials, so app.on('login') answers the
+// proxy's challenge with the credentials from the same account.
+const proxyApplied = new Set();    // partitions we changed (so clearing one goes back to the system)
+async function applyProxy(a) {
+  const p = a.proxyEnc ? { ok: false, error: 'The saved proxy could not be unlocked.' } : parseProxy(a.proxy);
+  if (!p.ok) return p;
+  // Accounts that never had a proxy keep Electron's own default (the system
+  // network, or a command-line --proxy-server), so we don't override it.
+  if (!p.proxy && !p.direct && !p.pac && !proxyApplied.has(a.partition)) return { ok: true, direct: false };
+  const ses = session.fromPartition(a.partition);
+  try {
+    await ses.setProxy(p.config);
+    proxyApplied.add(a.partition);
+    try { await ses.closeAllConnections(); } catch {}   // don't reuse sockets from the old proxy
+    return { ok: true, proxy: p.proxy || null, direct: !!p.direct };
+  } catch {
+    return { ok: false, error: 'Chromium could not use that proxy.' };
+  }
+}
+
+async function setAccountProxy(id, value) {
+  const a = acct(id); if (!a) return { error: 'That account no longer exists.' };
+  const raw = String(value == null ? '' : value).trim();
+  const p = parseProxy(raw);
+  if (!p.ok) return { error: p.error };
+  const before = a.proxy, beforeEnc = a.proxyEnc;
+  if (raw) { a.proxy = raw; delete a.proxyEnc; } else { delete a.proxy; delete a.proxyEnc; }
+  saveAccounts();
+  const r = await applyProxy(a);
+  if (!r.ok) {                        // keep the old, working setting
+    if (before) a.proxy = before; else delete a.proxy;
+    if (beforeEnc) a.proxyEnc = beforeEnc; else delete a.proxyEnc;
+    saveAccounts();
+    await applyProxy(a);
+    return { error: r.error };
+  }
+  const w = winOf(id);
+  if (w) w.webContents.reload();      // every new connection uses the new proxy
+  broadcast(); buildMenu();
+  return { ok: true, account: accountSummary(a) };
+}
+
+// The credentials Chromium asks for when a proxy wants a username and
+// password. Matched to the account by its window, or failing that by the
+// proxy host and port (some requests start outside the page).
+function proxyDetailsFor(wc, authInfo) {
+  if (!authInfo || !authInfo.isProxy) return null;
+  const a = accountOfWebContents(wc) || accounts.find((x) => proxyLogin(x.proxy, authInfo.host, authInfo.port));
+  return a ? proxyLogin(a.proxy, authInfo.host, authInfo.port) : null;
 }
 
 function setupDiscordSession(a) {
@@ -766,9 +850,19 @@ app.on('before-quit', (e) => {
 app.on('web-contents-created', (_e, wc) => {
   wc.on('will-attach-webview', (ev) => ev.preventDefault());
 });
+// A proxy that asks for a username and password gets the ones saved with the
+// account whose window made the request. Anything else keeps Electron's
+// default (cancel), as before.
+app.on('login', (event, wc, _details, authInfo, callback) => {
+  const cred = proxyDetailsFor(wc, authInfo);
+  if (!cred) return;
+  event.preventDefault();
+  callback(cred.username, cred.password);
+});
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   accounts = loadAccounts(); saveAccounts();
+  for (const a of accounts) await applyProxy(a);    // before any Discord window loads
   buildMenu();
   powerSaveBlocker.start('prevent-app-suspension');        // keep transcribing at full speed in the background
   if (IS_WIN && !TEST) {      // shortcuts from before the rename: "Call Transcriber" -> "Earshot"
