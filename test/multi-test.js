@@ -57,6 +57,10 @@ async function scenario(name, listenerQuery) {
   console.log('LISTENER MIC', JSON.stringify(mic), '| sound muted per window', JSON.stringify(muted));
   if (mic.audio !== 1 || mic.label !== 'MediaStreamAudioDestinationNode') fail('listener did not get the silent microphone');
   if (mic.video !== 'NotAllowedError') fail('listener camera not refused');
+  // your own account: never the real microphone either (a silent one instead)
+  const mainMic = await main.evaluate(async () => { try { const st = await navigator.mediaDevices.getUserMedia({ audio: true }); return st.getAudioTracks()[0]?.label; } catch (e) { return e.name; } });
+  console.log('MAIN MIC', mainMic);
+  if (mainMic !== 'MediaStreamAudioDestinationNode') fail('your own account got a real microphone: ' + mainMic);
   if (!muted.some(([t, m]) => /listener/.test(t) && m)) fail('listener window is not muted');
 
   await main.click('#join'); await listener.click('#join');

@@ -145,8 +145,12 @@ body {
 .where svg { width: 15px; height: 15px; flex: none; color: var(--text-muted); }
 .where span { white-space: nowrap; }
 .where b { color: var(--text-primary); font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-header { display: flex; align-items: center; gap: 12px; flex-wrap: nowrap; min-width: 0; }
-header .pills { flex-wrap: nowrap; flex: none; }
+/* the header wraps whenever it runs out of room: the call name keeps at least
+   ~14em, and the status pills move to their own row (and wrap there) before
+   anything is cut off */
+header { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; min-width: 0; }
+header .where { flex: 1 1 14em; }
+header .pills { flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; min-width: 0; max-width: 100%; margin-left: auto; }
 .pill { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 16px; letter-spacing: -.01em; margin-right: 6px; }
 .brand svg { width: 28px; height: 28px; }
@@ -219,6 +223,8 @@ body:not(.compact) .lcol > .card.grow:not([data-panel="transcript"]) { min-heigh
 /* lines that were not the person's own voice (a video, someone in their room) */
 .line.bg .text { color: var(--text-muted); }
 .line.bg .who { opacity: .6; }
+.audio-lost { margin: 0 14px 10px; padding: 8px 10px; border-radius: 6px; font-size: 12.5px; line-height: 1.45; color: var(--text-primary); background: color-mix(in srgb, #e5484d 14%, transparent); border: 1px solid color-mix(in srgb, #e5484d 45%, transparent); }
+.audio-lost[hidden] { display: none; }
 .bgtag { font-size: 10.5px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; margin-left: 6px; white-space: nowrap; vertical-align: 1px; }
 @keyframes flash { from { background: color-mix(in srgb, var(--accent) 16%, transparent); } to { background: transparent; } }
 /* questions and answers */
@@ -335,8 +341,6 @@ body.compact #feedmeta { display: none; }
   body.compact #toggle-side { display: inline-flex; }
 }
 @media (max-width: 1150px) {
-  header { flex-wrap: wrap; row-gap: 8px; }
-  header .pills { order: 9; flex: 1 0 100%; overflow-x: auto; scrollbar-width: none; }
   .kpi .sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #feedmeta { display: none; }
   .card .head { flex-wrap: wrap; row-gap: 6px; }
@@ -582,6 +586,7 @@ select, input[type=search] { border-radius: var(--radius); }
     <div class="col">
       <div class="card c-live" data-panel="live" data-title="Live in the call">
         <div class="head"><h2>Live in Discord</h2><span class="meta" id="nowmeta"></span></div>
+        <div class="audio-lost" id="audio-lost" hidden></div>
         <div class="now" id="now"><span class="empty" style="padding:4px 0">No one yet</span></div>
       </div>
       <div class="card c-pers" data-panel="persona" data-title="Personalities" id="c-pers">
@@ -709,6 +714,13 @@ function visibleLines() {
 function renderFeed(onlyAppend = false, around = null) {
   const feed = $('#feed');
   const keepTop = feed.scrollTop;
+  // reading back during a full redraw: remember the first line on screen and where
+  // it sits, and put it back there afterwards (lines above it may come or go)
+  let anchor = null, anchorOff = 0;
+  if (!onlyAppend && !around && !feedFollow) {
+    const el = [...feed.querySelectorAll('.line[data-li]')].find((x) => x.offsetTop + x.offsetHeight > keepTop);
+    if (el) { anchor = shownLines[+el.dataset.li] || null; anchorOff = el.offsetTop - keepTop; }   // (data-li indexes the lines as last drawn)
+  }
   const vis = visibleLines();
   $('#feedmeta').textContent = (filter ? nameFor(filter) + ' · ' : '') + vis.length + ' lines' + (query ? ' matching' : '');
   if (!vis.length) { feed.innerHTML = `<div class="empty">${lines.length ? 'Nothing matches.' : 'Waiting for someone to speak…'}</div>`; return; }
@@ -717,10 +729,12 @@ function renderFeed(onlyAppend = false, around = null) {
   const html = [];
   // keep the DOM light on long days: the last 1500 lines, or from a little before
   // an older line someone asked to see
-  const ai = around ? vis.indexOf(around) : -1;
-  const from = ai >= 0 ? Math.max(0, Math.min(ai - 200, vis.length - 1500)) : Math.max(0, start, vis.length - 1500);
+  const ai = around ? vis.indexOf(around) : -1, ki = anchor ? vis.indexOf(anchor) : -1;
+  const from = ai >= 0 ? Math.max(0, Math.min(ai - 200, vis.length - 1500))
+    : ki >= 0 ? Math.max(0, Math.min(ki - 200, vis.length - 1500))
+    : Math.max(0, start, vis.length - 1500);
   const slice = vis.slice(from);
-  lineIdx = new Map(lines.map((r, i) => [r, i]));
+  lineIdx = new Map(lines.map((r, i) => [r, i])); shownLines = lines;
   let prev = from > 0 ? vis[from - 1] : null;
   for (const r of slice) {
     const k = keyOf.get(r);
@@ -735,7 +749,12 @@ function renderFeed(onlyAppend = false, around = null) {
   if (ai >= 0) feedFollow = false;                           // went back to an older line
   else if (feedFollow) pinFeed();
   else if (onlyAppend) $('#jump').style.display = 'block';
-  else feed.scrollTop = keepTop;                             // redrawn while reading back: stay put
+  else {                                                     // redrawn while reading back: stay put
+    const el = anchor && lineEl(lineIdx.get(anchor));
+    feed.style.scrollBehavior = 'auto';
+    feed.scrollTop = el ? el.offsetTop - anchorOff : keepTop;
+    feed.style.scrollBehavior = '';
+  }
 }
 // ------------------------------------------------------------ questions and answers
 // A line whose last sentence ends in "?" is a question. Its answer is the next
@@ -745,7 +764,7 @@ function renderFeed(onlyAppend = false, around = null) {
 // person replaces the one before it. Questions nobody answered say so.
 const QA_WINDOW = 20000;
 const TAG_Q = /^(right|yeah|yes|no|huh|what|really|ok|okay|wait|sorry|eh|hm+|you know|isn't it|is it)\?$/i;
-let lineIdx = new Map(), qa = { q: new Map(), a: new Map() };
+let lineIdx = new Map(), shownLines = [], qa = { q: new Map(), a: new Map() };
 const qCache = new WeakMap();
 function questionIn(r) {
   if (qCache.has(r)) return qCache.get(r);
@@ -839,6 +858,7 @@ $('#feed').addEventListener('mouseover', (e) => { const el = e.target.closest('.
 $('#feed').addEventListener('mouseleave', () => { $('#feed').__hov = null; hideLink(); });
 $('#feed').addEventListener('click', (e) => {
   const b = e.target.closest('button.qa[data-go]'); if (!b) return;
+  feedFollow = false;                 // going to a linked line, away from the newest
   const target = lines[+b.dataset.go]; if (!target) return;
   let el = lineEl(b.dataset.go);
   if (!el) {
@@ -859,14 +879,21 @@ setInterval(() => { if ($('#feed .qa.wait')) paintQA(); }, 5000);
 var feedFollow = true, feedUserAt = 0;   // var: renderFeed may run before this line during start-up
 function pinFeed() { const f = $('#feed'); if (!f) return; f.style.scrollBehavior = 'auto'; f.scrollTop = f.scrollHeight; f.style.scrollBehavior = ''; $('#jump').style.display = 'none'; }
 ['wheel', 'touchmove', 'keydown', 'mousedown'].forEach((ev) => $('#feed').addEventListener(ev, () => { feedUserAt = Date.now(); }, { passive: true }));
+// scrolling keys pressed while the pointer is over the transcript (it may not have focus)
+const SCROLL_KEYS = new Set(['PageUp', 'PageDown', 'ArrowUp', 'ArrowDown', 'Home', 'End', ' ']);
+document.addEventListener('keydown', (e) => { const f = $('#feed'); if (SCROLL_KEYS.has(e.key) && (f.matches(':hover') || f.contains(document.activeElement))) feedUserAt = Date.now(); });
 $('#feed').addEventListener('scroll', (e) => {
   const f = e.target, gap = f.scrollHeight - f.scrollTop - f.clientHeight;
-  if (gap < 40) { feedFollow = true; $('#jump').style.display = 'none'; }
-  else if (Date.now() - feedUserAt < 1500) feedFollow = false;
+  if (Date.now() - feedUserAt < 1500) feedFollow = gap < 40;       // you're scrolling: follow only if you reached the bottom
+  else if (gap < 40) feedFollow = true;
+  if (feedFollow) $('#jump').style.display = 'none';
 });
 $('#jump').onclick = () => { feedFollow = true; pinFeed(); };
 { let pinQueued = false;
-  const keepPinned = () => { if (!feedFollow || pinQueued) return; pinQueued = true; requestAnimationFrame(() => { pinQueued = false; if (feedFollow) pinFeed(); }); };
+  // never pin while you're in the middle of scrolling (a smooth scroll fires its
+  // first events near the bottom; pinning then would undo your scroll)
+  const userBusy = () => Date.now() - feedUserAt < 1500;
+  const keepPinned = () => { if (!feedFollow || pinQueued || userBusy()) return; pinQueued = true; requestAnimationFrame(() => { pinQueued = false; if (feedFollow && !userBusy()) pinFeed(); }); };
   new ResizeObserver(keepPinned).observe($('#feed'));
   new MutationObserver(keepPinned).observe($('#feed'), { childList: true, subtree: true, characterData: true }); }
 
@@ -1206,6 +1233,11 @@ function renderState() {
   const refineNice = st.refine ? ' + ' + (modelsInfo?.models?.find((m) => m.id === st.refine)?.name.split('·').pop().trim() || '2B') + ' rewrite' : '';
   set('#p-model', st.modelReady ? 'ok' : 'warn', (st.modelReady ? '' : 'Loading ') + nice + refineNice + (st.queue > 1 ? ` · ${st.queue} queued` : '') + (st.refineLoading ? ' · loading 2B' : ''));
   $('#livedot').style.visibility = st.ext?.inCall && isToday() ? 'visible' : 'hidden';
+  // Discord can't decrypt the call: say so, and how to fix it
+  const lost = SHARE ? [] : (st.accounts || []).filter((a) => a.audioLost);   // never in the shared view
+  const al = $('#audio-lost');
+  al.hidden = !lost.length;
+  if (lost.length) al.innerHTML = `<b>No call audio is coming through.</b> Discord can't decrypt the call in ${lost.map((a) => esc(a.label || 'your account')).join(', ')}'s window, so nothing is being transcribed. Leave the voice channel and join it again to fix it.`;
   const ppl = [...st.people].sort((a, b) => (b.talking - a.talking) || (b.lastSeen - a.lastSeen));
   for (const p of ppl) if (!/^user-\d{4}$/.test(p.name)) { latestName.set(p.user, p.name); names[p.user] = p.name; }
   $('#nowmeta').textContent = ppl.length ? `${ppl.filter((p) => p.talking).length} talking · ${ppl.length} heard recently` : '';
@@ -2007,7 +2039,7 @@ function accountLine(a) {
     : a.hint ? 'click Join Voice in its window' : 'free';
   return `<div class="acct${a.deafened ? ' bad' : ''}"><div class="an">${esc(a.label)}<span class="ar">${a.role === 'main' ? 'main' : 'listener'}</span></div>
     <div class="as">${st}</div>
-    <div class="ab"><button data-acct-show="${esc(a.id)}">Show</button>${a.role === 'listener' ? `<button data-acct-mute="${esc(a.id)}" data-on="${a.muted ? 0 : 1}">${a.muted ? 'Sound on' : 'Sound off'}</button><button data-acct-main="${esc(a.id)}" title="Use your real microphone with this account">Make main</button><button data-acct-rm="${esc(a.id)}" class="danger">Remove</button>` : ''}</div></div>`;
+    <div class="ab"><button data-acct-show="${esc(a.id)}">Show</button>${a.role === 'listener' ? `<button data-acct-mute="${esc(a.id)}" data-on="${a.muted ? 0 : 1}">${a.muted ? 'Sound on' : 'Sound off'}</button><button data-acct-main="${esc(a.id)}" title="Make this your main account. No account ever sends your microphone">Make main</button><button data-acct-rm="${esc(a.id)}" class="danger">Remove</button>` : ''}</div></div>`;
 }
 function accountsHtml() {
   const list = appState.accounts || [];
@@ -2245,7 +2277,7 @@ async function showCall(fresh = false) {
 }
 function reveal(c) { if (c) { closedGroups.delete(srvKey(c)); closedGroups.delete(chKey(c)); saveClosed(); } }
 async function openCall(id, scrollToT) {
-  feedFollow = true;
+  feedFollow = !scrollToT;            // opening at a search hit: stay there
   selected = id === calls[0]?.id && isLiveCall(calls[0]) && liveCallCount() <= 1 ? 'live' : id;
   reveal(calls.find((c) => c.id === id));
   filter = null; query = ''; $('#q').value = '';

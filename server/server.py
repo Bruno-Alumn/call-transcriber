@@ -721,6 +721,10 @@ class Hub:
                         "streams": len([x for x in (st.get("liveIds") or []) if x not in own]) if fresh else 0,
                         "present": [x for x in (st.get("liveIds") or []) if x not in own] if fresh else [],
                         "deafened": bool(self_st.get("deaf") or self_st.get("selfDeaf")),
+                        # call audio lost: Discord kept failing to decrypt it over the last 30 s and
+                        # nobody has been audible for 30 s (counted from joining if nobody has been yet)
+                        "audioLost": bool(fresh and st.get("pcs") and st.get("tracks") and (st.get("decryptFails") or 0) > 100
+                                          and st.get("heardAgo") is not None and st.get("heardAgo") > 30),
                         "lastReport": int(at * 1000) if at else None})
         return out
 

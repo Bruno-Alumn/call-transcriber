@@ -9,6 +9,18 @@
   if (window.__dtHook) return;
   window.__dtHook = { version: 12, tracks: 0, chunks: 0, errors: [], loadedAt: document.readyState, pcs: 0, badStreamIds: [] };
   const H = window.__dtHook;
+  // Discord's end-to-end voice encryption logs this when it can't decrypt a
+  // frame. A burst of them while every track is silent means the call audio is
+  // lost on this side (rejoining the channel fixes it): count them so the
+  // dashboard can say so.
+  H.decryptFails = 0; H.lastHeard = 0;
+  try {
+    const err = console.error;
+    console.error = function (...a) {
+      try { if (a.some((x) => typeof x === 'string' && x.includes('Failed to finalize decryption'))) H.decryptFails++; } catch {}
+      return err.apply(this, a);
+    };
+  } catch {}
   const pcs = new Set();
   const ssrcUser = new Map();           // voice gateway op 5: ssrc -> user id
   const readers = new Map();            // track.id -> entry
@@ -311,7 +323,7 @@
         // Audio-clock seconds covered, per this track: a shortfall vs wall time = dropped audio.
         entry.audioSec = (entry.audioSec || 0) + 0.2;
         if (!data.pcm) { H.silent = (H.silent || 0) + 1; return; }
-        H.loudMax = Math.max(H.loudMax || 0, data.rms);
+        H.loudMax = Math.max(H.loudMax || 0, data.rms); H.lastHeard = Date.now();
         if (enabled && entry.userId) emit(entry, wallOf(data.t0), data.pcm, data.rms);
       };
     } else {
@@ -324,6 +336,7 @@
         let sq = 0;
         for (let i = 0; i < n; i++) { const v = Math.max(-1, Math.min(1, x[i])); out[i] = v * 32767; sq += v * v; }
         const rms = Math.sqrt(sq / n);
+        if (rms >= 0.002) H.lastHeard = Date.now();
         if (rms < 0.002) { if (!tail) return; tail--; } else tail = 3;
         emit(entry, wallOf(ev.playbackTime ?? c.currentTime) - (n / c.sampleRate) * 1000, out.buffer, rms);
       };
@@ -393,8 +406,18 @@
     H.live = [...readers.values()].map((r) => idName.get(r.userId) || r.userId);
     H.names = Object.fromEntries(idName);
   }, 2000);
+  // Lost call audio (see console.error above): decryption failures in the last 30 s,
+  // and how long since anyone was audible (or since this call started, if nobody
+  // has been yet). This only notices when ALL audio is lost, not one person's.
+  const failsAt = []; let lastFails = 0, callSince = 0;
   setInterval(() => {
+    const now = Date.now();
+    failsAt.push([now, H.decryptFails - lastFails]); lastFails = H.decryptFails;
+    while (failsAt.length && now - failsAt[0][0] > 30000) failsAt.shift();
+    if (H.pcs && H.tracks) callSince ||= now; else callSince = 0;
+    const heardRef = Math.max(H.lastHeard || 0, callSince);
     window.postMessage({ __dtStatus: true, s: {
+      decryptFails: failsAt.reduce((t, x) => t + x[1], 0), heardAgo: heardRef ? Math.round((now - heardRef) / 1000) : null,
       v: H.version, loadedAt: H.loadedAt, pcs: H.pcs, tracks: H.tracks, capture: H.capture,
       activeTracks: [...readers.values()].filter((r) => r.isActive?.()).length,
       silent: H.silent || 0, loudMax: +(H.loudMax || 0).toFixed(3), ctxRate: ctx?.sampleRate, ctxBase: ctx ? +(ctx.baseLatency || 0).toFixed(3) : null, frames: H.frames || 0, chunks: H.chunks,

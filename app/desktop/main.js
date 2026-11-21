@@ -256,18 +256,33 @@ const fromDash = (e) => dash && !dash.isDestroyed() && e.sender === dash.webCont
 // (their session also refuses media permission, so a bypass fails closed).
 const LISTENER_PRELUDE = `(() => { try {
   const deny = () => Promise.reject(new DOMException('Listener accounts have no camera or microphone', 'NotAllowedError'));
-  const silent = () => { const C = window.AudioContext || window.webkitAudioContext; const ctx = new C(); return ctx.createMediaStreamDestination().stream; };
+  let ctx; const silent = () => { const C = window.AudioContext || window.webkitAudioContext; ctx ||= new C(); return ctx.createMediaStreamDestination().stream; };   // one context, reused
   const md = MediaDevices.prototype;
   md.getUserMedia = function (c) { return c && c.audio ? Promise.resolve(silent()) : deny(); };
   md.getDisplayMedia = function () { return deny(); };
   window.__ctListener = true;
+} catch (e) {} })();`;
+// No account ever gets your microphone: Discord gets a silent one instead of the
+// real one, before its own code runs, so nothing you say can reach a call even
+// if Discord shows you unmuted. Camera and screen sharing still work on your own
+// account. (Every session also refuses real-microphone requests, so a bypass fails closed.)
+const MIC_OFF_PRELUDE = `(() => { try {
+  let ctx; const silent = () => { const C = window.AudioContext || window.webkitAudioContext; ctx ||= new C(); return ctx.createMediaStreamDestination().stream; };   // one context, reused
+  const md = MediaDevices.prototype, real = md.getUserMedia;
+  md.getUserMedia = function (c) {
+    if (!c || !c.audio) return real.call(this, c);
+    if (!c.video) return Promise.resolve(silent());
+    return real.call(this, { video: c.video }).then((v) => { const s = silent(); v.getVideoTracks().forEach((t) => s.addTrack(t)); return s; });
+  };
+  window.__ctMicOff = true;
 } catch (e) {} })();`;
 let hookSource = '';
 ipcMain.on('ct:hook-source', (e) => {
   const a = accounts.find((x) => winOf(x.id) && e.sender === winOf(x.id).webContents);
   if (!a) { e.returnValue = {}; return; }
   hookSource ||= fs.readFileSync(path.join(__dirname, 'page-hook.js'), 'utf8');
-  e.returnValue = { role: a.role, src: (a.role === 'listener' ? LISTENER_PRELUDE + '\n' : '') + hookSource };
+  const prelude = a.role === 'listener' ? LISTENER_PRELUDE : MIC_OFF_PRELUDE;
+  e.returnValue = { role: a.role, src: (prelude ? prelude + '\n' : '') + hookSource };
 });
 ipcMain.on('ct:hello', (e) => {
   const a = accountOfSender(e); if (!a) return;
@@ -372,7 +387,7 @@ const icon = () => (IS_WIN && fs.existsSync(ICON_ICO) ? ICON_ICO : fs.existsSync
 
 function createDashboard() {
   dash = new BrowserWindow({
-    width: 1320, height: 860, minWidth: 980, minHeight: 620, title: 'Earshot', show: false,
+    width: 1320, height: 860, minWidth: 760, minHeight: 540, title: 'Earshot', show: false,   // the dashboard adapts down to this
     backgroundColor: windowBg(), icon: icon(), autoHideMenuBar: true,
     webPreferences: { preload: path.join(__dirname, 'dashboard-preload.js'), contextIsolation: true, sandbox: true, backgroundThrottling: true },
   });
@@ -401,10 +416,11 @@ function setupDiscordSession(a) {
   ses.setUserAgent(chromeUserAgent());
   const listener = () => acct(a.id)?.role === 'listener';
   const allowed = new Set(['media', 'notifications', 'clipboard-sanitized-write', 'clipboard-read', 'fullscreen', 'speaker-selection', 'display-capture']);
-  // Listener accounts: refuse requests for the real microphone and camera.
+  // No account gets the real microphone; listener accounts get no camera either.
   const input = (types) => types.some((t) => t === 'audio' || t === 'video');
   const ok = (perm, url, types = []) => allowed.has(perm) && isDiscordUrl(url || '')
-    && !(listener() && (perm === 'display-capture' || (perm === 'media' && input(types))));
+    && !(listener() && (perm === 'display-capture' || (perm === 'media' && input(types))))
+    && !(perm === 'media' && types.includes('audio'));                   // never the microphone
   const log = TEST && process.env.CT_PERMLOG ? (...x) => console.log('PERM', a.role, ...x) : () => {};
   ses.setPermissionRequestHandler((_wc, perm, cb, details) => { const r = ok(perm, details.requestingUrl, details.mediaTypes || []); log('request', perm, JSON.stringify(details.mediaTypes || []), r); cb(r); });
   // Checks only report state (and Chromium also checks before playing audio on a machine
@@ -546,9 +562,6 @@ function createDiscord(a, { show = true, url } = {}) {
 
 async function showDiscord(id) {
   const a = (id && acct(id)) || mainAccount();
-  if (a.role === 'main' && IS_MAC && systemPreferences.getMediaAccessStatus('microphone') === 'not-determined') {
-    systemPreferences.askForMediaAccess('microphone').catch(() => {});
-  }
   const w = winOf(a.id);
   if (!w) { createDiscord(a); return; }
   w.show(); w.focus();
