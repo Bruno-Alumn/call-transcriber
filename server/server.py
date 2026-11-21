@@ -1425,7 +1425,8 @@ Not real questions (answer no): exclamations and swearing ("what the hell?", "br
 Think it through, then reply with one word: yes or no."""
 QA_VERIFY = """You read two lines from a voice chat. Q is a question. Does line A answer Q: does it respond to what Q asked? A line that only follows Q, changes the subject, or answers something else does not.
 Think it through, then reply with one word: yes or no."""
-QA_WAIT_S = 75          # judge a question once its answer window (45 s) and any 2B rewrite (within 60 s) have passed
+QA_AFTER = 10           # an answer is looked for in the next 10 lines; none of them answers it: "no answer"
+QA_WAIT_S = 45          # or, in a quiet stretch, once 45 s have passed
 
 
 def is_question_text(text: str) -> bool:
@@ -1485,7 +1486,8 @@ class QAJudge:
                     waiting += 1
                     key = (d, r["id"])
                     self.wanted[key] = time.time()
-                    if now - r["end"] > QA_WAIT_S * 1000:
+                    later = sum(1 for x in recs if x["t"] > r["t"] and not x.get("bg") and (not r.get("ch") or not x.get("ch") or x["ch"] == r["ch"]))
+                    if later >= QA_AFTER or now - r["end"] > QA_WAIT_S * 1000:
                         with self.cv:
                             if key not in self.pending and len(self.todo) < 400:
                                 self.pending.add(key)
@@ -1505,7 +1507,11 @@ class QAJudge:
         q = recs[qi]
         same = lambda r: not q.get("ch") or not r.get("ch") or r["ch"] == q["ch"]
         before = [r for r in recs[max(0, qi - 30):qi] if same(r) and q["t"] - r["t"] < 60000][-6:]
-        after = [r for r in recs[qi + 1:qi + 40] if same(r) and r["t"] - q["t"] < 45000][:10]
+        # what was said after it: the next 10 lines, including a reply that started a moment
+        # before the question ended (people answer while the asker is still finishing)
+        after = [r for r in recs[max(0, qi - 6):qi + 40] if r is not q and same(r) and r["t"] - q["t"] < 45000
+                 and (r["t"] > q["t"] or (r["t"] >= q["t"] - 2000 and r["end"] > q["end"]))][:QA_AFTER]
+        before = [r for r in before if r not in after]
         text = ("Said before:\n" + "\n".join(f"{r['speaker']}: {r['text']}" for r in before) + "\n\n" if before else "") \
             + f"QUESTION ({q['speaker']}): {q['text']}\n\nSaid after, numbered:\n" \
             + ("\n".join(f"{n}. {r['speaker']}: {r['text']}" for n, r in enumerate(after, 1)) or "(nothing)")
@@ -1535,7 +1541,7 @@ class QAJudge:
         a = after[ans - 1] if isinstance(ans, int) and 1 <= ans <= len(after) else None
         who = lambda r: r.get("user") or r.get("speaker")
         # an answer comes after the question, from someone else, and responds to it
-        if a is not None and (a["t"] <= q["t"] or who(a) == who(q)):
+        if a is not None and (a["end"] <= q["end"] or who(a) == who(q)):
             a = None
         if a is not None:
             v = self._think(QA_VERIFY, f"Q ({q['speaker']}): {q['text']}\nA ({a['speaker']}): {a['text']}")
