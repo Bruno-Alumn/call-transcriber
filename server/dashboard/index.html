@@ -1266,8 +1266,13 @@ function extSummary(st) {
   const inCalls = (st.accounts || []).filter((a) => a.inCall);
   const deaf = inCalls.filter((a) => a.deafened).length;
   if (deaf) return ['warn', `Discord · ${deaf} deafened, not transcribing`];
-  if (inCalls.length > 1) return ['ok', `Discord · ${new Set(inCalls.map((a) => a.channel?.id)).size} calls · ${inCalls.filter((a) => a.capturing).reduce((n, a) => n + a.streams, 0)} people`];
-  return ['ok', `Discord · ${e.streams} in call`];
+  // who is in the voice channel right now, from Discord's own member list (not everyone heard since joining)
+  const here = (a) => (a.present?.length ?? a.streams ?? 0) + inCalls.filter((b) => b.channel?.id && b.channel.id === a.channel?.id).length;
+  if (inCalls.length > 1) {
+    const chans = new Map(inCalls.filter((a) => a.channel?.id).map((a) => [a.channel.id, here(a)]));
+    return ['ok', `Discord · ${chans.size} calls · ${[...chans.values()].reduce((n, x) => n + x, 0)} people`];
+  }
+  return ['ok', `Discord · ${inCalls[0] ? here(inCalls[0]) : (e.present?.length ?? e.streams) + 1} in call`];
 }
 function renderState() {
   const st = liveState;

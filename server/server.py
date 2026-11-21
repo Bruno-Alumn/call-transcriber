@@ -886,7 +886,7 @@ class Hub:
                "discordTab": self.extensions > 0 and age < 15,          # a Discord tab reports every 5 s
                "paused": bool(st.get("paused")) if age < 15 else False,
                "inCall": bool(st.get("pcs")) and bool(st.get("tracks")),
-               "streams": len(st.get("live") or []),
+               "streams": len([x for x in (st.get("liveIds") or []) if x not in self.own_ids()]) if st.get("liveIds") is not None else len(st.get("live") or []),   # in the channel now
                "named": sum(1 for n in (st.get("live") or []) if not re.fullmatch(r"\d{15,22}", str(n))),
                "audio": st.get("ctx"), "hook": st.get("v"), "errors": st.get("errors") or [],
                "channel": st.get("channel") if age < 15 else None,
