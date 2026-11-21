@@ -191,8 +191,10 @@ body:not(.compact) .lcol > .card.grow:not([data-panel="transcript"]) { min-heigh
 .card.grow #act { height: 100%; min-height: 60px; }
 /* timeline: bottom-aligned when it fits, scrolls when there are more lanes than room (auto margin, so the top stays reachable) */
 .card.grow.c-tl > .body { display: flex; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; }
-.card.grow.c-tl #tl { flex: none; margin-top: auto; }
-.c-tl:not(.grow) > .body { max-height: 340px; overflow-y: auto; overscroll-behavior: contain; }
+.card.grow.c-tl #tl { flex: none; }
+.c-tl .head { flex-wrap: wrap; row-gap: 6px; }
+.c-tl .head .seg button { padding: 2px 7px; }
+.c-tl:not(.grow) > .body { max-height: 460px; overflow-y: auto; overscroll-behavior: contain; }
 /* talk time lists everyone: it scrolls inside its panel instead of cutting people off */
 .card.grow.c-talk > .body { overflow-y: auto; overscroll-behavior: contain; -webkit-mask-image: linear-gradient(#000 calc(100% - 14px), transparent); mask-image: linear-gradient(#000 calc(100% - 14px), transparent); }
 .card.grow.c-talk .bars { padding-bottom: 12px; }   /* the last row clears the fade that hints there's more */
@@ -618,7 +620,8 @@ select, input[type=search] { border-radius: var(--radius); }
         <div class="body" style="padding-top:0"><svg id="act" width="100%" height="150" role="img" aria-label="Talk time in each slice of time, by speaker"></svg></div>
       </div>
       <div class="card c-tl" data-panel="timeline" data-title="Timeline">
-        <div class="head"><h2>Timeline</h2><span class="meta" id="tl-meta">last 10 minutes · drag or scroll to zoom, Shift+scroll to move</span></div>
+        <div class="head"><h2>Timeline</h2><span class="meta" id="tl-meta"></span>
+          <div class="seg" id="tl-range" style="margin-left:auto" title="How much of the call to show"><button data-m="2">2m</button><button data-m="5">5m</button><button data-m="10">10m</button><button data-m="30">30m</button><button data-m="60">1h</button><button data-m="0">All</button></div></div>
         <div class="body" style="padding-top:0"><svg id="tl" width="100%" height="40" role="img" aria-label="Who spoke when"></svg></div>
       </div>
       <div class="card c-words" data-panel="words" data-title="Most said">
@@ -1027,9 +1030,12 @@ const chartView = { act: null, tl: null };
 function fmtTimeShort(t, span) { return new Date(t).toLocaleTimeString([], span < 5 * 60000 ? { hour: 'numeric', minute: '2-digit', second: '2-digit' } : { hour: 'numeric', minute: '2-digit' }); }
 // What each chart shows when not zoomed, and how far you can zoom out: the whole
 // call, or the default view if that is wider (a short call in the 10-minute Timeline).
+// Timeline length in minutes (0 = the whole call), remembered per browser
+let tlRange = 10;
+try { const v = +localStorage.getItem('ct-tl-range'); if ([0, 2, 5, 10, 30, 60].includes(v) && localStorage.getItem('ct-tl-range') !== null) tlRange = v; } catch {}
 function chartDefault(key) {
   const end = isToday() ? Math.max(Date.now(), lines[lines.length - 1].end) : lines[lines.length - 1].end;
-  if (key === 'tl') return { a: (isToday() ? Date.now() : end) - 10 * 60000, b: isToday() ? Date.now() : end };
+  if (key === 'tl') { const b = isToday() ? Date.now() : end; return { a: tlRange ? b - tlRange * 60000 : Math.min(lines[0].t, b - 60000), b }; }
   return { a: range && end - lines[0].t > range * 60000 ? end - range * 60000 : lines[0].t, b: end };
 }
 function chartBounds(key) {
@@ -1116,66 +1122,89 @@ function attachZoom(key) {
 }
 
 // ------------------------------------------------------------ timeline (swimlanes)
+const rangeName = (m) => !m ? 'the whole call' : m < 60 ? `the last ${m} minutes` : 'the last hour';
+function tickStep(span, width, labelW) {   // a round step whose labels never touch
+  for (const st of [5e3, 1e4, 15e3, 3e4, 6e4, 12e4, 3e5, 6e5, 9e5, 18e5, 36e5, 72e5]) if (width * st / span >= labelW + 14) return st;
+  return 144e5;
+}
+const clockLabel = (t, secs) => new Date(t).toLocaleTimeString([], secs ? { hour: 'numeric', minute: '2-digit', second: '2-digit' } : { hour: 'numeric', minute: '2-digit' }).replace(/\s?[AP]M$/i, '');
 function renderTimeline(s) {
   const svg = $('#tl'); const W = svg.clientWidth || 400;
-  const tv = chartView.tl;
-  const endT = tv ? tv.b : isToday() ? Date.now() : (lines[lines.length - 1]?.end || Date.now());
-  const startT = tv ? tv.a : endT - 10 * 60000;
+  const tv = chartView.tl, live = isToday();
+  const def = lines.length ? chartDefault('tl') : { a: Date.now() - tlRange * 60000, b: Date.now() };
+  const endT = tv ? tv.b : def.b, startT = tv ? tv.a : def.a, span = endT - startT;
   const recent = lines.filter((r) => r.end > startT && r.t < endT && own(r));
   const keys = [...new Set(recent.map((r) => keyOf.get(r)))].sort((a, b) => colorIndex.get(a) - colorIndex.get(b));
-  // A sized panel (compact mode) fills its slot; lanes shrink to fit but never
-  // below a readable 14 px. With more people than fit, the panel scrolls.
+  document.querySelectorAll('#tl-range button').forEach((b) => b.classList.toggle('on', !tv && +b.dataset.m === tlRange));
+  const tm = $('#tl-meta'); if (tm) tm.textContent = tv ? '' : (narrowTl() ? '' : rangeName(tlRange));
+  svg.title = 'Drag across a stretch to zoom in · scroll to zoom · Shift+scroll to move · double-click to go back';
+  // lanes: a sized panel (compact view) fits them to its slot, never below 16 px
   const sized = !!svg.closest('.card.grow');
-  const room = sized ? Math.max(48, svg.parentElement.clientHeight - 14) : Infinity;
-  const lane = Math.max(14, Math.min(sized ? 26 : 18, Math.floor((room - 22) / Math.max(1, keys.length)))), padL = 110, padB = 18, H = Math.max(40, keys.length * lane + padB + 4);
+  const room = sized ? Math.max(60, svg.parentElement.clientHeight - 10) : Infinity;
+  const padB = 4, padT = 20;            // clock times along the top, always in view
+  const lane = Math.max(16, Math.min(sized ? 28 : 24, Math.floor((room - padB - padT) / Math.max(1, keys.length))));
+  const longest = Math.max(4, ...keys.map((k) => Math.min(16, Array.from(nameFor(k)).length)));
+  const padL = Math.min(150, Math.max(70, 18 + longest * 7.2)), right = W - 6;
+  const H = Math.max(48, padT + keys.length * lane + padB);
   svg.setAttribute('height', H); svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-  svg.__geo = { padL, W, a: startT, b: endT, right: W - 4 };
+  svg.__geo = { padL, W, a: startT, b: endT, right };
   zoomLabel('tl');
-  const tm = $('#tl-meta'); if (tm) tm.textContent = tv ? 'double-click to follow live' : 'last 10 minutes · drag or scroll to zoom, Shift+scroll to move';
-  if (!keys.length) { svg.innerHTML = `<text x="${W / 2}" y="22" text-anchor="middle">${tv ? 'Nobody spoke in this stretch' : 'Nobody has spoken in the last 10 minutes'}</text>`; return; }
-  const x = (t) => padL + (W - padL - 4) * (t - startT) / (endT - startT);
+  if (!keys.length) { svg.innerHTML = `<text x="${W / 2}" y="24" text-anchor="middle">${tv ? 'Nobody spoke in this stretch' : `Nobody has spoken in ${rangeName(tlRange)}`}</text>`; return; }
+  const x = (t) => padL + (right - padL) * (t - startT) / span;
+  const now = Date.now();
   let out = '';
+  // gridlines with clock times
+  const secs = span < 6e5, st = tickStep(span, right - padL, secs ? 52 : 36);
+  for (let t = Math.ceil(startT / st) * st; t <= endT; t += st) {
+    const xx = x(t);
+    out += `<line x1="${xx}" x2="${xx}" y1="${padT - 4}" y2="${H - padB}" stroke="var(--grid)"/>`;
+    if (xx > padL + 20 && xx < right - 34) out += `<text x="${xx}" y="13" text-anchor="middle">${clockLabel(t, secs && st % 6e4 !== 0)}</text>`;
+  }
+  // lanes: shaded rows, colour swatch and name (bold while talking)
   keys.forEach((k, i) => {
-    const yy = 2 + i * lane;
+    const yy = padT + i * lane, talking = recent.some((r) => keyOf.get(r) === k && now - r.end < 4000) && live && !tv;
     const nm = Array.from(nameFor(k)), short = nm.length > 16 ? nm.slice(0, 15).join('') + '…' : nm.join('');
-    out += `<text x="${padL - 8}" y="${yy + 12}" text-anchor="end" style="fill:var(--text-secondary)"><title>${esc(nameFor(k))}</title>${esc(short)}</text><line x1="${padL}" x2="${W}" y1="${yy + 8}" y2="${yy + 8}" stroke="var(--grid)"/>`;
+    if (i % 2 === 0) out += `<rect x="0" y="${yy}" width="${W}" height="${lane}" fill="var(--text-primary)" opacity=".035"/>`;
+    out += `<rect x="4" y="${yy + lane / 2 - 4}" width="8" height="8" rx="2" fill="${colorFor(k)}"/>`
+      + `<text x="17" y="${yy + lane / 2 + 4}" style="fill:var(--text-${talking ? 'primary' : 'secondary'});font-weight:${talking ? 650 : 400}"><title>${esc(nameFor(k))}</title>${esc(short)}</text>`;
   });
+  // what each person said, as bars
+  const bh = Math.max(8, lane - 8);
   recent.forEach((r, idx) => {
     const i = keys.indexOf(keyOf.get(r));
-    const yy = 2 + i * lane + 2;
-    const x0 = Math.max(padL, x(r.t)), x1 = Math.max(x0 + 3, x(r.end));
-    out += `<rect class="u" data-i="${idx}" x="${x0}" y="${yy}" width="${x1 - x0}" height="12" rx="4" fill="${colorFor(keyOf.get(r))}" ${filter && filter !== keyOf.get(r) ? 'opacity=".25"' : ''}/>`;
+    const x0 = Math.max(padL, x(r.t)), x1 = Math.min(right, Math.max(x0 + 3, x(r.end) - 1));
+    const dim = (filter && filter !== keyOf.get(r)) ? .25 : r.bg ? .45 : 1;
+    out += `<rect class="u" data-i="${idx}" x="${x0}" y="${padT + i * lane + (lane - bh) / 2}" width="${Math.max(3, x1 - x0)}" height="${bh}" rx="${Math.min(4, bh / 2)}" fill="${colorFor(keyOf.get(r))}" opacity="${dim}"/>`;
   });
   // questions: a curve from each question to its answer; a hollow mark on ones nobody answered
   qa = qaLinks();
-  const laneY = (r) => 2 + keys.indexOf(keyOf.get(r)) * lane + 8;
+  const laneY = (r) => padT + keys.indexOf(keyOf.get(r)) * lane + lane / 2;
   const shown = new Set(recent);
   recent.forEach((r) => {
     if (!qa.q.has(r)) return;
-    const ans = qa.q.get(r), qx = Math.min(W - 4, Math.max(padL, x(r.end))), qy = laneY(r);
+    const ans = qa.q.get(r), qx = Math.min(right, Math.max(padL, x(r.end))), qy = laneY(r);
     const dim = filter && filter !== keyOf.get(r) && !(ans && ans !== 'wait' && filter === keyOf.get(ans));
     if (ans && ans !== 'wait' && shown.has(ans)) {
       const ax = Math.max(padL, x(ans.t)), ay = laneY(ans), mx = (qx + ax) / 2;
-      out += `<path class="qa-arc" d="M${qx} ${qy} C${mx} ${qy}, ${mx} ${ay}, ${ax} ${ay}" fill="none" stroke="${colorFor(keyOf.get(r))}" stroke-width="1.5" stroke-dasharray="3 2" opacity="${dim ? .2 : .75}"><title>${esc(nameFor(keyOf.get(r)))} asked, ${esc(nameFor(keyOf.get(ans)))} answered</title></path>`;
+      out += `<path class="qa-arc" d="M${qx} ${qy} C${mx} ${qy}, ${mx} ${ay}, ${ax} ${ay}" fill="none" stroke="var(--text-secondary)" stroke-width="1.25" stroke-dasharray="3 3" opacity="${dim ? .15 : .55}"><title>${esc(nameFor(keyOf.get(r)))} asked, ${esc(nameFor(keyOf.get(ans)))} answered</title></path>`;
     } else if (ans === null) {
-      out += `<circle cx="${qx + 5}" cy="${qy}" r="3.5" fill="var(--surface-1)" stroke="${colorFor(keyOf.get(r))}" stroke-width="1.5" opacity="${dim ? .25 : 1}"><title>No answer: ${esc(questionIn(r))}</title></circle>`;
+      out += `<circle cx="${qx + 5}" cy="${qy}" r="3" fill="var(--surface-1)" stroke="var(--text-secondary)" stroke-width="1.25" opacity="${dim ? .2 : .8}"><title>No answer: ${esc(questionIn(r))}</title></circle>`;
     }
   });
-  if (!tv) {
-    const step = W - padL < 260 ? 5 : 2;      // fewer labels when narrow, so they never overlap
-    for (let m = 0; m <= 10; m += step) out += `<text x="${x(startT + m * 60000)}" y="${H - 4}" text-anchor="${m === 10 ? 'end' : 'middle'}">${m === 10 ? 'now' : '−' + (10 - m) + ' min'}</text>`;
-  } else {                                    // zoomed: clock times
-    const n = Math.max(2, Math.min(6, Math.floor((W - padL) / 90)));
-    for (let k = 0; k <= n; k++) { const t = startT + (endT - startT) * k / n; out += `<text x="${x(t)}" y="${H - 4}" text-anchor="${k === 0 ? 'start' : k === n ? 'end' : 'middle'}">${fmtTimeShort(t, endT - startT)}</text>`; }
-  }
+  // "now" while following the live call
+  if (live && !tv && endT >= now - 1000) out += `<line x1="${right}" x2="${right}" y1="${padT - 4}" y2="${H - padB}" stroke="var(--accent)" stroke-width="1.5"/><text x="${right}" y="13" text-anchor="end" style="fill:var(--accent)">now</text>`;
   svg.innerHTML = out;
-  svg.__geo = { padL, W, a: startT, b: endT, right: W - 4 };
-  zoomLabel('tl');
   svg.querySelectorAll('.u').forEach((el) => {
     el.onmousemove = (e) => { const r = recent[+el.dataset.i]; showTip(e, `<div class="t">${fmtTime(r.t)} · ${esc(nameFor(keyOf.get(r)))}</div>${esc(r.text)}`); };
     el.onmouseleave = hideTip;
   });
 }
+const narrowTl = () => ($('#tl')?.clientWidth || 999) < 420;
+document.querySelectorAll('#tl-range button').forEach((b) => b.onclick = () => {
+  tlRange = +b.dataset.m; chartView.tl = null;
+  try { localStorage.setItem('ct-tl-range', String(tlRange)); } catch {}
+  renderTimeline(stats());
+});
 
 // ------------------------------------------------------------ words
 function renderWords() {
