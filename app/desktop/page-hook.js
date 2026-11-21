@@ -241,6 +241,29 @@
     H.nameVia = Object.assign(H.nameVia || {}, via);
     H.unnamedRows = unnamedRows;
   }
+  // Who each person is on Discord: username (the unique handle), display name and
+  // server nickname, for everyone in the call or heard. The server keeps a record of
+  // every name a person has used, tied to their account id, which never changes.
+  const accounts = new Map();          // id -> { u, g, n, at }
+  function accountOf(id) {
+    const st = findStores(); if (!st) return null;
+    try {
+      const u = st.user.getUser(id); if (!u?.username) return null;
+      const g = voiceGuild(st, id);
+      let nick = null; try { nick = g ? st.member?.getNick?.(g, id) : null; } catch {}
+      return { u: String(u.username), g: clean(u.globalName || u.global_name) || null, n: clean(nick) || null };
+    } catch { return null; }
+  }
+  setInterval(() => {
+    const ids = new Set([...(inChannelIds() || []), ...[...readers.values()].map((r) => r.userId).filter(Boolean)]);
+    for (const id of ids) {
+      const old = accounts.get(id);
+      if (old && Date.now() - old.at < 60000) continue;           // look each person up again once a minute
+      const a = accountOf(id);
+      if (a) accounts.set(id, { ...a, at: Date.now() });
+    }
+    H.accounts = Object.fromEntries([...accounts].map(([id, a]) => [id, { u: a.u, g: a.g, n: a.n }]));
+  }, 3000);
   let lastSaved = '';
   setInterval(() => {
     const js = JSON.stringify(Object.fromEntries(idName));
@@ -442,7 +465,7 @@
       v: H.version, loadedAt: H.loadedAt, pcs: H.pcs, tracks: H.tracks, capture: H.capture,
       activeTracks: [...readers.values()].filter((r) => r.isActive?.()).length,
       silent: H.silent || 0, loudMax: +(H.loudMax || 0).toFixed(3), ctxRate: ctx?.sampleRate, ctxBase: ctx ? +(ctx.baseLatency || 0).toFixed(3) : null, frames: H.frames || 0, chunks: H.chunks,
-      ctx: ctx ? ctx.state : 'none', enabled, live: H.live, liveIds: inChannelIds() ?? [...new Set([...readers.values()].map((r) => r.userId).filter(Boolean))], names: H.names, nameVia: H.nameVia,
+      ctx: ctx ? ctx.state : 'none', enabled, live: H.live, liveIds: inChannelIds() ?? [...new Set([...readers.values()].map((r) => r.userId).filter(Boolean))], names: H.names, nameVia: H.nameVia, accounts: H.accounts || {},
       badStreamIds: H.badStreamIds, dupDropped: H.dupDropped || 0, errors: [...new Set(H.errors)].slice(-5),
       storeDiag: H.storeDiag, unnamedRows: H.unnamedRows, channel: currentChannel(), me: meInfo(),
       occ: watchIds.length ? watchIds.map(channelOcc) : undefined,

@@ -238,6 +238,22 @@ body:not(.compact) .lcol > .card.grow:not([data-panel="transcript"]) { min-heigh
 .merge-bar button { font: inherit; border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary); border-radius: 6px; padding: 5px 10px; cursor: pointer; white-space: nowrap; }
 .merge-bar button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .merge-bar button:disabled { opacity: .5; cursor: default; }
+.side .top .row { display: flex; align-items: center; gap: 8px; }
+.people-btn { margin-left: auto; height: 26px; padding: 0 8px; font-size: 12px; }
+.modal.people { width: min(760px, calc(100vw - 32px)); }
+.plist { display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
+.modal .prow { font: inherit; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; padding: 8px 10px; border: 0; border-radius: 6px; background: none; color: inherit; text-align: left; cursor: pointer; }
+.modal .prow:hover { background: var(--surface-2); }
+.prow .pn { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
+.prow .pn small, .modal .un { color: var(--text-muted); font-weight: 400; font-size: 12px; }
+.prow .pn .aka { flex-basis: 100%; }
+.prow .pc { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.plines { overflow-y: auto; }
+.pday { font-size: 12px; font-weight: 650; color: var(--text-secondary); margin: 12px 0 4px; }
+.modal .pline { font: inherit; box-shadow: none; height: auto; min-height: 0; display: grid; grid-template-columns: 84px 1fr; gap: 10px; width: 100%; padding: 4px 6px; border: 0; border-radius: 4px; background: none; color: var(--text-primary); text-align: left; cursor: pointer; }
+.modal .pline:hover { background: var(--surface-2); }
+.pline .time { color: var(--text-muted); font-family: var(--mono); font-size: 11.5px; }
+.pline i { color: var(--text-muted); font-style: normal; }
 .bgtag { font-size: 10.5px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; margin-left: 6px; white-space: nowrap; vertical-align: 1px; }
 @keyframes flash { from { background: color-mix(in srgb, var(--accent) 16%, transparent); } to { background: transparent; } }
 /* questions and answers */
@@ -584,6 +600,7 @@ select, input[type=search] { border-radius: var(--radius); }
     <div class="row">
       <img src="/logo.png" width="22" height="22" alt="" style="border-radius:5px">
       <h1>Calls</h1>
+      <button class="iconbtn people-btn" id="open-people" title="Everyone who has spoken, with all their lines" aria-label="People"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.4" d="M5.5 7.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM1.5 13.5c0-2.2 1.8-4 4-4s4 1.8 4 4M11 7a2 2 0 1 0 0-4M12 9.6c1.5.4 2.5 1.8 2.5 3.4"/></svg><span>People</span></button>
     </div>
     <input type="search" id="hq" placeholder="Search all calls…" aria-label="Search all calls">
   </div>
@@ -733,7 +750,22 @@ const colorFor = (k) => {
   const n = i - SLOTS.length, hue = (n * 137.508 + 166) % 360;
   return `oklch(calc(var(--fb-l) + var(--fb-dl) * ${n % 2}) 0.13 ${hue.toFixed(1)})`;
 };
-const nameFor = (k) => latestName.get(k) || k;
+// Names setting: the server nickname (as heard), their display name, or their username
+let peopleById = new Map();
+const nameFor = (k) => {
+  const style = serverSettings?.nameStyle || 'nick', p = peopleById.get(k);
+  if (p && style === 'username' && p.username) return p.username;
+  if (p && style === 'display' && p.display) return p.display;
+  return latestName.get(k) || k;
+};
+async function loadPeople() {
+  const list = await fetch('/api/people').then((r) => r.json()).catch(() => null);
+  if (!Array.isArray(list)) return;
+  const before = JSON.stringify([...peopleById.values()].map((p) => [p.id, p.username, p.display]));
+  peopleById = new Map(list.map((p) => [p.id, p]));
+  if (before !== JSON.stringify(list.map((p) => [p.id, p.username, p.display])) && (serverSettings?.nameStyle || 'nick') !== 'nick') renderAll();
+}
+setInterval(loadPeople, 60000);
 const dur = (r) => Math.max(0.3, (r.end - r.t) / 1000);
 
 // ------------------------------------------------------------ transcript
@@ -1755,6 +1787,57 @@ function renderCalls() {
   if (ah) ah.onclick = () => { archOpen = !archOpen; try { localStorage.setItem('ct-arch-open', archOpen ? '1' : '0'); } catch {} renderCalls(); };
 }
 
+// ---- People: everyone who has spoken, by Discord account, with every line they said
+const fmtDay = (t) => new Date(t).toLocaleDateString([], { month: 'short', day: 'numeric', year: new Date(t).getFullYear() === new Date().getFullYear() ? undefined : 'numeric' });
+async function openPeople(focusId) {
+  await loadPeople();
+  const bg = $('#modal'), box = bg.firstElementChild;
+  box.classList.add('persona', 'people');
+  const close = () => { bg.style.display = 'none'; box.classList.remove('persona', 'people'); };
+  const list = [...peopleById.values()];
+  const row = (p) => `<button class="prow" data-id="${esc(p.id)}"><span class="swatch" style="background:${colorIndex.has(p.id) ? colorFor(p.id) : 'var(--other)'}"></span>
+      <span class="pn"><b>${esc(p.name)}</b>${p.username ? `<small>@${esc(p.username)}</small>` : ''}${p.names.length > 1 ? `<small class="aka">also ${esc(p.names.filter((n) => n !== p.name).slice(0, 4).join(', '))}</small>` : ''}</span>
+      <span class="pc">${p.lines.toLocaleString()} lines · last ${fmtDay(p.last)}</span></button>`;
+  const showList = (q = '') => {
+    const ql = q.toLowerCase();
+    const hits = list.filter((p) => !ql || [p.name, p.username, ...p.names].some((x) => x && x.toLowerCase().includes(ql)));
+    box.innerHTML = `<h3>People</h3><div class="hint" style="margin:0 0 8px">Everyone who has spoken, matched by their Discord account, so every name they used is the same person.${list.some((p) => !p.username) ? ' Usernames appear once a person is heard again.' : ''}</div>
+      <input type="search" id="pq" placeholder="Search names and usernames…" value="${esc(q)}" style="width:100%;margin-bottom:8px">
+      <div class="pbody plist">${hits.map(row).join('') || '<div class="hint">Nobody matches.</div>'}</div>
+      <div class="btns"><button data-a="close">Close</button></div>`;
+    box.querySelector('[data-a="close"]').onclick = close;
+    const qi = box.querySelector('#pq'); qi.oninput = () => { const v = qi.value, pos = qi.selectionStart; showList(v); const n = box.querySelector('#pq'); n.focus(); n.setSelectionRange(pos, pos); };
+    box.querySelectorAll('.prow').forEach((b) => b.onclick = () => showPerson(b.dataset.id, q));
+  };
+  const showPerson = async (id, q) => {
+    const p = peopleById.get(id) || { id, name: id, names: [], lines: 0 };
+    box.innerHTML = `<h3>${esc(p.name)}${p.username ? ` <small class="un">@${esc(p.username)}</small>` : ''}</h3><div class="pbody"><div class="hint">Loading…</div></div>`;
+    const d = await fetch('/api/person?id=' + encodeURIComponent(id)).then((r) => r.json()).catch(() => null);
+    if (!d?.lines) { box.querySelector('.pbody').innerHTML = '<div class="hint">Could not load.</div>'; return; }
+    let html = `<div class="hint" style="margin-top:0">${d.lines.length.toLocaleString()} lines${p.names.length ? ' · names used: ' + esc(p.names.join(', ')) : ''}${d.usernames?.length > 1 ? ' · usernames: ' + esc(d.usernames.map((u) => '@' + u).join(', ')) : ''}</div>`;
+    let lastKey = null;
+    for (const r of d.lines.slice(-3000)) {
+      const key = r.day + '|' + (r.call || '');
+      if (key !== lastKey) { html += `<div class="pday">${esc(fmtDay(r.t))}${r.chName ? ' · ' + esc(r.chName) : ''}${r.guildName ? ' · ' + esc(r.guildName) : ''}</div>`; lastKey = key; }
+      html += `<button class="pline" data-call="${esc(r.call || '')}" data-t="${r.t}" title="Open this moment in its call"><span class="time">${fmtTime(r.t)}</span><span>${r.speaker && r.speaker !== p.name ? `<i>${esc(r.speaker)}:</i> ` : ''}${esc(r.text)}</span></button>`;
+    }
+    box.innerHTML = `<h3>${esc(p.name)}${p.username ? ` <small class="un">@${esc(p.username)}</small>` : ''}</h3><div class="pbody plines">${html}</div>
+      <div class="btns"><button data-a="back">All people</button><button data-a="save">Save as file</button><button data-a="close">Close</button></div>`;
+    const pb = box.querySelector('.plines'); pb.scrollTop = pb.scrollHeight;
+    box.querySelector('[data-a="close"]').onclick = close;
+    box.querySelector('[data-a="back"]').onclick = () => showList(q || '');
+    box.querySelector('[data-a="save"]').onclick = async () => {
+      const md = await fetch('/api/person?format=md&id=' + encodeURIComponent(id)).then((r) => r.text());
+      saveFile(`${(p.username || p.name).replace(/[^\w.-]+/g, '_')}.md`, md, 'text/markdown');
+    };
+    box.querySelectorAll('.pline').forEach((b) => b.onclick = () => { if (!b.dataset.call) return; close(); openCall(b.dataset.call, +b.dataset.t); });
+  };
+  bg.onclick = (e) => { if (e.target === bg) close(); };
+  bg.style.display = 'grid';
+  focusId ? showPerson(focusId, '') : showList();
+}
+$('#open-people').onclick = () => openPeople();
+
 // ---- merging calls: pick two or more, then Merge (undo with "Split back")
 const mergeSel = new Set();
 const toast = (msg) => window.earshot.ui.toast(msg);
@@ -2088,7 +2171,7 @@ const loadServerSettings = () => fetch('/api/settings').then((r) => r.json()).th
 function applySettings() {
   document.documentElement.classList.toggle('no-persona', serverSettings && serverSettings.personality === false);
 }
-loadServerSettings();
+loadServerSettings().then(() => loadPeople());
 async function openSettings() {
   const ss = await loadServerSettings() || {};
   const as = desk?.appSettings ? await desk.appSettings() : null;
@@ -2112,6 +2195,7 @@ async function openSettings() {
       <div class="srow"><span><b>Speech model</b><small>${esc(model)}</small></span><button data-a="model">Change…</button></div>
       ${tog('splitLines', 'Split lines at sentences', ss.splitLines !== false, 'When people talk over each other, lines interleave in the order they were said.')}
       ${sel('sensitivity', 'Speech detection', ss.sensitivity || 'normal', [['high', 'More sensitive'], ['normal', 'Normal'], ['low', 'Less sensitive']], 'More sensitive picks up quiet voices; less ignores background noise.')}
+      ${sel('nameStyle', 'Names', ss.nameStyle || 'nick', [['nick', 'Server nickname'], ['display', 'Display name'], ['username', 'Username']], 'How people are named in the transcript and charts. A username stays the same across servers and name changes.')}
       ${sel('background', 'Background voices', ss.background || 'dim', [['dim', 'Dim them'], ['show', 'Show normally'], ['hide', 'Hide them']], 'Speech that doesn\'t sound like the person, like a video playing near their mic. Dimmed or hidden, they are left out of exports, Copy and talk stats; never in personality reads.')}
       <div class="srow"><span><b>Language</b><small>English only. Both models are held to English words, so they never switch to another language.</small></span></div>
       <div class="sh">Personality reads</div>
@@ -2138,7 +2222,7 @@ async function openSettings() {
     const r = await fetch(`/api/settings?key=${encodeURIComponent(k)}&value=${encodeURIComponent(v === true ? '1' : v === false ? '0' : v)}`, { method: 'POST', headers: { 'X-CT': '1' } }).then((x) => x.json()).catch(() => ({ error: 'The server isn\'t running.' }));
     if (r.error) { msg(r.error); return; }
     await loadServerSettings();
-    if (k === 'background') renderAll();
+    if (k === 'background' || k === 'nameStyle') { await loadPeople(); renderAll(); renderCalls(); }
     if (k === 'qaLinks') { qaMemo = null; paintQA(); renderTimeline(stats()); if (v) fetchQA(); }
     msg(k === 'language' ? 'Saved. The model reloads with the new language.' : 'Saved.');
   });
