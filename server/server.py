@@ -1213,53 +1213,129 @@ def set_setting(key: str, raw: str) -> dict:
 # on first use, unloaded after 10 idle minutes.
 LLM_REPOS = {"mlx": "LiquidAI/LFM3-1.7B-MLX-8bit", "torch": "LiquidAI/LFM3-1.7B"}
 LLM_NAME = "LFM3 1.7B"
-PERSONA_SYSTEM = """You write a quick, light-hearted personality read of one person, based only on things they said in a voice call. It is a playful guess, not an assessment.
+PERSONA_SYSTEM = """You read how one person comes across in a voice call between friends playing a game, using only things they said. This is an impression of how they talk with others, not a medical or psychological diagnosis.
 
-Rules:
-- Base every point on what they actually said. Quote short bits as evidence.
-- Never guess or mention health, mental health, sexuality, religion, politics, ethnicity, age, or other sensitive traits.
-- Be fair and kind. No insults, no diagnoses.
-- If the lines are few or generic, say the read is shaky.
+Rate each item from their lines. If the lines don't show something, give it a low score. Do not invent; base every rating and note on what they actually said, and quote short bits.
 
-Answer in exactly this format and nothing else:
-**In a sentence:** <one sentence>
+Big Five, each 1 to 5 (3 is average):
+- O openness: curious, imaginative vs. plain, routine
+- C conscientiousness: organised, careful vs. careless, impulsive
+- E extraversion: talkative, energetic vs. quiet, reserved
+- A agreeableness: warm, cooperative vs. blunt, combative
+- S emotional stability: calm, steady vs. tense, reactive
 
-**Big Five (rough guess)**
-- Openness: <low|medium|high> - <short reason>
-- Conscientiousness: <low|medium|high> - <short reason>
-- Extraversion: <low|medium|high> - <short reason>
-- Agreeableness: <low|medium|high> - <short reason>
-- Emotional stability: <low|medium|high> - <short reason>
+Interpersonal signals, each 0 to 3 (0 none, 1 a little, 2 clear, 3 strong):
+- self-focus: centres talk on themselves, brags, wants admiration or praise, dismisses others (a narcissistic style)
+- antagonism: hostile, contemptuous, insulting, puts people down
+- manipulation: flatters or guilt-trips to get their way, says one thing and means another
+- impulsiveness: reactive, volatile, blurts things out, can't wait
+- warmth: notices others, supportive, includes people, kind
 
-**Comes across as:** <three short traits, comma-separated>
+Reply with exactly these lines, a number then a short reason from their words, and nothing else:
+SUMMARY: <one sentence on how they come across>
+O: <1-5> <reason>
+C: <1-5> <reason>
+E: <1-5> <reason>
+A: <1-5> <reason>
+S: <1-5> <reason>
+self-focus: <0-3> <evidence>
+antagonism: <0-3> <evidence>
+manipulation: <0-3> <evidence>
+impulsiveness: <0-3> <evidence>
+warmth: <0-3> <evidence>
+QUOTE: <a short quote>
+QUOTE: <a short quote>"""
 
-**Evidence:**
-- "<short quote>"
-- \"<short quote>\"
 
-Use two or three quotes, then stop."""
+PERSONA_SIGNALS = [("self-focus", "Self-focus (narcissistic style)"), ("antagonism", "Antagonism"),
+                   ("manipulation", "Manipulation"), ("impulsiveness", "Impulsiveness"), ("warmth", "Warmth")]
+PERSONA_BIG5 = [("O", "Openness"), ("C", "Conscientiousness"), ("E", "Extraversion"),
+                ("A", "Agreeableness"), ("S", "Emotional stability")]
+_SIG_TRAIT = {"self-focus": "self-focused", "antagonism": "combative", "manipulation": "calculating",
+              "impulsiveness": "impulsive", "warmth": "warm"}
 
 
-def tidy_persona(text: str) -> str:
-    """Small models sometimes keep going after the format ends: keep one
-    Evidence section with at most three quotes, drop anything after it."""
-    out, in_ev, quotes = [], False, 0
-    for line in text.strip().splitlines():
-        if re.match(r"^\W*evidence", line, re.I):
-            if in_ev:
-                break
-            in_ev = True
-            out.append("**Evidence:**")
+def _persona_parse(raw: str):
+    summary, big5, signals, quotes = "", {}, {}, []
+    for line in (raw or "").splitlines():
+        t = line.strip().strip("-*• ").strip()
+        m = re.match(r"(?i)^summary\s*[:\-]\s*(.+)$", t)
+        if m and not summary:
+            summary = m.group(1).strip(); continue
+        m = re.match(r"(?i)^quote\s*[:\-]\s*(.+)$", t)
+        if m:
+            q = m.group(1).strip().strip('"“”\'').strip()
+            if q and q != "<a short quote>" and len(quotes) < 3:
+                quotes.append(q)
             continue
-        if in_ev:
-            if line.strip().startswith(("-", "•", "*")):
-                quotes += 1
-                if quotes > 3:
-                    break
-            elif line.strip():
-                break
-        out.append(line)
-    return "\n".join(out).strip()
+        m = re.match(r"(?i)^(emotional stability|[OCEAS])\s*[:\-]\s*([1-5])\b[.\)\s]*(.*)$", t)
+        if m:
+            k = "S" if m.group(1).upper() not in ("O", "C", "E", "A", "S") else m.group(1).upper()
+            big5[k] = (int(m.group(2)), m.group(3).strip()); continue
+        m = re.match(r"(?i)^(self[\s-]?focus|antagonism|manipulation|impulsiveness|warmth)\s*[:\-]\s*([0-3])\b[.\)\s]*(.*)$", t)
+        if m:
+            k = "self-focus" if m.group(1).lower().replace(" ", "").replace("-", "") == "selffocus" else m.group(1).lower()
+            signals[k] = (int(m.group(2)), m.group(3).strip()); continue
+    return summary, big5, signals, quotes
+
+
+def _persona_clean(ev: str) -> str:
+    """Tidy a model's reason: drop a left-over <0-3>/<1-5> placeholder, a (12) line
+    reference, a leading dash/colon/bracket, and cap the length."""
+    ev = (ev or "").strip()
+    ev = re.sub(r"^[\s\-–—•*:>]+", "", ev)            # leading dashes, colons, bullets
+    ev = re.sub(r"^<?\s*[0-9]\s*-\s*[0-9]\s*>\s*", "", ev)   # <0-3>, 0-3>, <1-5> ...
+    ev = re.sub(r"^<[^>]*>\s*", "", ev)               # any other leading <tag>
+    ev = re.sub(r"^\([0-9]+\)[\s:]*", "", ev)         # (12) line reference
+    ev = re.sub(r"^[\s\-–—•*:<>]+", "", ev).strip()   # whatever leading punctuation is left
+    return (ev[:157].rstrip() + "…") if len(ev) > 160 else ev
+
+
+def persona_build(raw: str) -> dict:
+    """Turn the model's rated lines into structured data for the report graphic
+    (and a plain-text version for Copy and as a fallback). Signals are ranked in
+    code, so the order never depends on the small model."""
+    summary, big5, signals, quotes = _persona_parse(raw)
+    if not big5 and not signals:
+        return {"text": (raw or "").strip()[:1500], "data": None}   # unparseable: show what came back
+
+    b = lambda k: big5.get(k, (3, ""))[0]
+    traits = [_SIG_TRAIT[k] for k, _ in PERSONA_SIGNALS if signals.get(k, (0, ""))[0] >= 2]
+    for cond, word in [(b("E") >= 4, "outgoing"), (b("E") <= 2, "reserved"), (b("A") >= 4, "easygoing"),
+                       (b("A") <= 2, "blunt"), (b("C") >= 4, "organised"), (b("S") <= 2, "tense"),
+                       (b("S") >= 4, "steady"), (b("O") >= 4, "curious")]:
+        if cond and word not in traits and "combative" not in (traits if word == "blunt" else []):
+            traits.append(word)
+    traits = traits[:3]
+
+    labels = dict(PERSONA_SIGNALS)
+    # every signal in the graphic (self-focus/narcissism always visible), strongest first
+    sig = [{"key": k, "label": labels[k], "score": signals.get(k, (0, ""))[0],
+            "note": _persona_clean(signals.get(k, (0, ""))[1]), "good": k == "warmth"}
+           for k, _ in PERSONA_SIGNALS]
+    sig.sort(key=lambda s: (s["good"], -s["score"]))      # warmth last; otherwise strongest first
+    big = [{"key": k, "label": lbl, "score": big5[k][0], "note": _persona_clean(big5[k][1])}
+           for k, lbl in PERSONA_BIG5 if k in big5]
+    data = {"summary": summary, "traits": traits, "signals": sig, "big5": big, "quotes": quotes[:3]}
+
+    out = []
+    if summary:
+        out.append(f"**In a sentence:** {summary}")
+    if traits:
+        out.append(f"**Comes across as:** {', '.join(traits)}")
+    shown = [s for s in sig if s["key"] == "self-focus" or s["score"] >= 1]
+    if shown:
+        out.append("**Signals (0 = none, 3 = strong):**")
+        for s in shown:
+            bar = "●" * s["score"] + "○" * (3 - s["score"])
+            out.append(f"- {s['label']}: {bar} {s['score']}/3{(' — ' + s['note']) if s['note'] else ''}")
+    if big:
+        out.append("**Big Five (1-5):**")
+        out.extend(f"- {x['label']}: {x['score']}/5{(' — ' + x['note']) if x['note'] else ''}" for x in big)
+    if quotes:
+        out.append("**In their words:**")
+        out.extend(f'- "{q}"' for q in quotes[:3])
+    return {"text": "\n".join(out), "data": data}
 
 
 class PersonalityReader:
@@ -1399,9 +1475,10 @@ class PersonalityReader:
                 with self.lock:
                     self._load(eng)
                     job["status"] = "thinking"
-                    text = self._generate(messages)
+                    raw = self.think_then_answer(messages, think_tokens=420, answer_tokens=600)
                     self.last_used = time.time()
-                job.update(status="done", text=tidy_persona(text), seconds=round(time.time() - job["started"], 1))
+                built = persona_build(raw)
+                job.update(status="done", text=built["text"], data=built["data"], seconds=round(time.time() - job["started"], 1))
             except Exception as e:
                 job.update(status="error", error=f"{type(e).__name__}: {e}"[:300])
         threading.Thread(target=run, daemon=True).start()
@@ -2404,10 +2481,10 @@ async def main():
             if request.headers.get("X-CT") != "1":
                 return respond({"error": "forbidden"}, status=403)
             try:
-                from urllib.parse import unquote
-                day_q = ",".join(d for d in unquote(params.get("day", "")).split(",") if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d))
+                from urllib.parse import unquote_plus
+                day_q = ",".join(d for d in unquote_plus(params.get("day", "")).split(",") if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d))
                 res = persona.start(day_q, int(params.get("from", 0)), int(params.get("to", 0)),
-                                    unquote(params.get("ch", "")), unquote(params.get("user", "")), unquote(params.get("name", "")),
+                                    unquote_plus(params.get("ch", "")), unquote_plus(params.get("user", "")), unquote_plus(params.get("name", "")),
                                     fresh=params.get("fresh") == "1", parts=parse_parts(params.get("parts", "")))
             except (ValueError, OSError) as e:
                 res = {"error": str(e)}

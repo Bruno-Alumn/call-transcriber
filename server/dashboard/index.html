@@ -399,6 +399,23 @@ body.compact #feedmeta { display: none; }
 .modal.persona .pbody ul { margin: 0 0 10px; padding-left: 18px; }
 .modal.persona .pbody li { margin: 2px 0; }
 .modal.persona .pnote { color: var(--text-muted); font-size: 11.5px; margin-top: 10px; }
+/* personality report graphic */
+.pbody .psum { font-size: 13.5px; font-weight: 550; color: var(--text-primary); margin: 0 0 8px; }
+.pbody .ptraits { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+.pbody .ptraits span { font-size: 11.5px; color: var(--text-secondary); border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px; }
+.pbody .phead { font-size: 11px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted); margin: 14px 0 6px; }
+.pbody .phead small { font-weight: 400; letter-spacing: 0; text-transform: none; margin-left: 6px; }
+.pbody .pbars { display: grid; gap: 2px 10px; }
+.pbody .pb { display: grid; grid-template-columns: 140px 1fr 30px; align-items: center; gap: 10px; }
+.pbody .pbl { font-size: 12.5px; color: var(--text-primary); }
+.pbody .pbn { font-size: 11.5px; color: var(--text-muted); text-align: right; font-variant-numeric: tabular-nums; }
+.pbody .meter { position: relative; height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+.pbody .meter b { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; min-width: 2px; }
+.pbody .meter .mid { position: absolute; left: 60%; top: -1px; bottom: -1px; width: 1px; background: var(--text-muted); opacity: .5; z-index: 1; }
+.pbody .pbnote { grid-column: 1 / -1; font-size: 11px; color: var(--text-secondary); margin: 0 0 7px 0; line-height: 1.4; }
+.pbody .pquotes { margin: 0; padding-left: 16px; }
+.pbody .pquotes li { color: var(--text-secondary); font-style: italic; margin: 3px 0; }
+@media (max-width: 460px) { .pbody .pb { grid-template-columns: 110px 1fr 28px; } .pbody .pbl { font-size: 12px; } }
 .pwait { display: flex; align-items: center; gap: 10px; color: var(--text-secondary); padding: 18px 0; }
 .pwait .s { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--accent); animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -601,7 +618,7 @@ select, input[type=search] { border-radius: var(--radius); }
         <div class="now" id="now"><span class="empty" style="padding:4px 0">No one yet</span></div>
       </div>
       <div class="card c-pers" data-panel="persona" data-title="Personalities" id="c-pers">
-        <div class="head"><h2>Personalities</h2><span class="meta" id="pers-meta">top speakers · local AI guess, just for fun</span></div>
+        <div class="head"><h2>Personalities</h2><span class="meta" id="pers-meta">top speakers · local AI read</span></div>
         <div class="pers" id="pers"></div>
       </div>
       <div class="card c-res" data-panel="resources" data-title="Resources">
@@ -752,7 +769,7 @@ function renderFeed(onlyAppend = false, around = null) {
     const k = keyOf.get(r);
     const cont = prev && keyOf.get(prev) === k && r.t - prev.end < 15000;
     const dimBg = r.bg && bgMode() === 'dim';
-    html.push(`<div class="line${cont ? ' cont' : ''}${onlyAppend ? ' new' : ''}${dimBg ? ' bg' : ''}" data-t="${r.t}" data-li="${lineIdx.get(r)}"><div class="time">${fmtTime(r.t)}</div><div>${cont ? '' : `<span class="who" data-k="${esc(k)}" title="Right-click for a personality read"><span class="swatch" style="background:${colorFor(k)}"></span>${esc(nameFor(k))}</span>`}<span class="text">${highlight(r.text)}</span>${dimBg ? '<span class="bgtag" title="Did not sound like this person: a video or someone else near their mic">background</span>' : ''}<span class="qa-slot"></span>${lineExtras(r)}</div></div>`);
+    html.push(`<div class="line${cont ? ' cont' : ''}${onlyAppend ? ' new' : ''}${dimBg ? ' bg' : ''}" data-t="${r.t}" data-li="${lineIdx.get(r)}"><div class="time">${fmtTime(r.t)}</div><div>${cont ? '' : `<span class="who" data-k="${esc(k)}" title="Right-click for a personality read (small local model)"><span class="swatch" style="background:${colorFor(k)}"></span>${esc(nameFor(k))}</span>`}<span class="text">${highlight(r.text)}</span>${dimBg ? '<span class="bgtag" title="Did not sound like this person: a video or someone else near their mic">background</span>' : ''}<span class="qa-slot"></span>${lineExtras(r)}</div></div>`);
     prev = r;
   }
   feed.insertAdjacentHTML('beforeend', html.join(''));
@@ -953,7 +970,7 @@ function renderBars(s) {
       <span class="name"><span class="swatch" style="background:${colorFor(p.k)}"></span>${esc(nameFor(p.k))}</span>
       <span class="track"><span class="fill" style="display:block;width:${(100 * p.talk / max).toFixed(1)}%;background:${colorFor(p.k)}"></span></span>
       <span class="num">${fmtDur(p.talk)} · ${Math.round(100 * p.talk / total)}%</span>
-      <button class="read" data-read="${esc(p.k)}" title="Personality read of ${esc(nameFor(p.k))} from this call (local AI, just for fun)">Read</button>
+      <button class="read" data-read="${esc(p.k)}" title="Personality read of ${esc(nameFor(p.k))} from this call (small local model)">Read</button>
     </div>`).join('') || '<div class="empty" style="padding:8px">No one has spoken yet</div>';
   document.querySelectorAll('.bar-row').forEach((el) => el.onclick = () => setFilter(el.dataset.k));
   document.querySelectorAll('.bar-row .read').forEach((b) => b.onclick = (e) => { e.stopPropagation(); personaRead(b.dataset.read); });
@@ -2080,7 +2097,7 @@ async function openSettings() {
       ${sel('background', 'Background voices', ss.background || 'dim', [['dim', 'Dim them'], ['show', 'Show normally'], ['hide', 'Hide them']], 'Speech that doesn\'t sound like the person, like a video playing near their mic. Dimmed or hidden, they are left out of exports, Copy and talk stats; never in personality reads.')}
       <div class="srow"><span><b>Language</b><small>English only. Both models are held to English words, so they never switch to another language.</small></span></div>
       <div class="sh">Personality reads</div>
-      ${tog('personality', 'Personality reads', ss.personality !== false, 'The Read buttons and the compact-mode panel. Written by a local model.')}
+      ${tog('personality', 'Personality reads', ss.personality !== false, 'The Read buttons and the Personalities panel: a small local model reads how each person comes across from what they said. An impression, not a diagnosis.')}
       ${tog('qaLinks', 'Link questions to answers', ss.qaLinks !== false, 'The small local model used for personality reads (LFM3) thinks through each question with what was said around it, skips rhetorical ones, and finds the line that answers it, if any.')}
       <div class="sh">Updates</div>
       ${tog('autoUpdate', 'Check for updates automatically', ss.autoUpdate !== false, `Version ${esc(upd?.current || '—')}. Checks when the app starts and every 6 hours.`)}
@@ -2199,6 +2216,39 @@ function personaHtml(text) {
   if (list) out.push('</ul>');
   return out.join('');
 }
+// The personality read as a little report: meters for the signals and the Big
+// Five, rather than numbers in text.
+const SIG_COLOR = { 0: 'var(--text-muted)', 1: '#e3b341', 2: '#e0813c', 3: '#e5565b' };   // stronger flag = warmer
+function meter(score, max, fill) {
+  const pct = Math.max(0, Math.min(1, score / max)) * 100;
+  const avg = max === 5 ? '<i class="mid"></i>' : '';   // Big Five: a mark at the average (3)
+  return `<span class="meter">${avg}<b style="width:${pct.toFixed(0)}%;background:${fill}"></b></span>`;
+}
+function personaGraphic(d) {
+  const escc = esc;
+  let h = '';
+  if (d.summary) h += `<p class="psum">${escc(d.summary)}</p>`;
+  if (d.traits?.length) h += `<div class="ptraits">${d.traits.map((t) => `<span>${escc(t)}</span>`).join('')}</div>`;
+  if (d.signals?.length) {
+    h += `<div class="phead">Signals <small>0 none · 3 strong</small></div><div class="pbars">`;
+    for (const s of d.signals) {
+      const fill = s.good ? '#3fb27f' : SIG_COLOR[s.score] || 'var(--accent)';
+      h += `<div class="pb"><div class="pbl">${escc(s.label)}</div>${meter(s.score, 3, fill)}<div class="pbn">${s.score}/3</div></div>`
+        + (s.note ? `<div class="pbnote">${escc(s.note)}</div>` : '');
+    }
+    h += `</div>`;
+  }
+  if (d.big5?.length) {
+    h += `<div class="phead">Big Five <small>1 low · 5 high</small></div><div class="pbars">`;
+    for (const x of d.big5) {
+      h += `<div class="pb"><div class="pbl">${escc(x.label)}</div>${meter(x.score, 5, 'var(--accent)')}<div class="pbn">${x.score}/5</div></div>`
+        + (x.note ? `<div class="pbnote">${escc(x.note)}</div>` : '');
+    }
+    h += `</div>`;
+  }
+  if (d.quotes?.length) h += `<div class="phead">In their words</div><ul class="pquotes">${d.quotes.map((q) => `<li>${escc(q)}</li>`).join('')}</ul>`;
+  return h;
+}
 async function personaRead(k) {
   const c = currentCall(); if (!c) return;
   const name = nameFor(k), user = /^\d{15,22}$/.test(k) ? k : '';
@@ -2212,7 +2262,7 @@ async function personaRead(k) {
   bg.onclick = (e) => { if (e.target === bg) close(); };
   const frame = (sub, body, btns = '') => {
     box.innerHTML = `<h3>Personality read · ${esc(name)}</h3><div class="psub">${sub}</div><div class="pbody">${body}</div>
-      <div class="pnote">A small AI model on this computer, guessing from a few lines. Just for fun; nothing leaves your computer.</div>
+      <div class="pnote">A small AI model on this computer rates how they come across from a few lines: an impression of their style in this call, not a diagnosis of anyone. Nothing leaves your computer.</div>
       <div class="btns">${btns}<button data-a="close">Close</button></div>`;
     box.querySelectorAll('button').forEach((b) => b.onclick = () => {
       if (b.dataset.a === 'close') close();
@@ -2233,7 +2283,7 @@ async function personaRead(k) {
     while (!closed && jobId === r.id) {
       const j = await fetch('/api/persona?id=' + r.id).then((x) => x.json()).catch(() => null);
       if (!j || closed) return;
-      if (j.status === 'done') { frame(`${sub} · ${esc(j.model)}, ${j.seconds}s`, personaHtml(j.text), '<button data-a="copy">Copy</button><button data-a="again">Read again</button>'); return; }
+      if (j.status === 'done') { frame(`${sub} · ${esc(j.model)}, ${j.seconds}s`, j.data ? personaGraphic(j.data) : personaHtml(j.text), '<button data-a="copy">Copy</button><button data-a="again">Read again</button>'); return; }
       if (j.status === 'error') { frame(sub, `<p>${esc(j.error || 'Something went wrong.')}</p>`, '<button data-a="again">Try again</button>'); return; }
       const msg = j.status === 'loading' ? `Loading ${esc(j.model)}… (the first time it downloads about 2 GB)` : 'Thinking…';
       if (!box.querySelector('.pwait') || box.querySelector('.pwait').dataset.m !== j.status)
@@ -2311,7 +2361,7 @@ async function refreshPers() {
       for (let i = 0; i < 300; i++) {
         const j = await fetch('/api/persona?id=' + r.id).then((x) => x.json()).catch(() => null);
         if (!j) break;
-        if (j.status === 'done') { persOverview.set(p.k, { status: 'done', at: j.started * 1000, ...persFields(j.text) }); break; }
+        if (j.status === 'done') { persOverview.set(p.k, { status: 'done', at: j.started * 1000, ...(j.data ? { sentence: j.data.summary || '', traits: (j.data.traits || []).join(', ') } : persFields(j.text)) }); break; }
         if (j.status === 'error') { if (!persOverview.get(p.k)?.sentence) persOverview.set(p.k, { status: 'error' }); break; }
         await new Promise((res) => setTimeout(res, 1000));
       }

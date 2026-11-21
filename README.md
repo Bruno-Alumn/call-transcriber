@@ -46,7 +46,7 @@ dashboard next to the call, and no audio ever leaves your machine.
 - Past calls grouped by server and channel, with search across all of them.
 - Compact mode puts the transcript and every panel on one screen, no scrolling.
 - Arrange it your way: drag panels between columns, size or hide them, and add new ones from plugins.
-- Personality reads: a light-hearted sketch of anyone in the call, written by a small local model.
+- Personality reads: a small local model's read of how anyone in the call comes across — Big Five scores and interpersonal signals (including a narcissistic, self-focused style), each ranked with evidence from what they said. An impression of their style, not a diagnosis.
 
 **Several accounts, several calls**
 
