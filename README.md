@@ -243,4 +243,6 @@ matches `VERSION` publishes a release, which the app then offers as an update.
 
 **All rights reserved:** © 2026 Bruno-Alumn.
 
+<sub>`server/langwords.txt.gz` (word frequencies used to keep transcripts in English) is derived from [wordfreq](https://github.com/rspeer/wordfreq) data by Robyn Speer and is shared under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).</sub>
+
 <sub>More apps by Bruno-Alumn: [SolStream](https://github.com/Bruno-Alumn/SolStream) · [Tuckaway](https://github.com/Bruno-Alumn/Tuckaway) · [ThockBox](https://github.com/Bruno-Alumn/ThockBox)</sub>

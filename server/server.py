@@ -503,7 +503,7 @@ def merge_calls(ids: list[str]) -> dict:
     """Merge these calls (and any merged calls they already belong to) into one."""
     raw = {c["id"] for d in all_days() for c in day_data(d)[1]}
     ids = [i for i in dict.fromkeys(ids) if i in raw]
-    groups = merge_groups()
+    groups = resolved_groups()
     owner = {i: g[0] for g in groups for i in g}
     if len({owner.get(i, i) for i in ids}) < 2:             # two different calls (or merged calls) at least
         return {"error": "pick at least two calls"}
@@ -519,15 +519,43 @@ def merge_calls(ids: list[str]) -> dict:
 
 
 def unmerge_call(cid: str) -> dict:
-    groups = merge_groups()
+    groups = resolved_groups()
     hit = [g for g in groups if cid in g]
     save_merge_groups([g for g in groups if cid not in g])
     return {"ok": bool(hit), "parts": len(hit[0]) if hit else 0}
 
 
+def resolved_groups() -> list[list[str]]:
+    """merge groups in today's call ids. A call's id is the day and start of its
+    first line, so it changes if an earlier line arrives late: a stored id that no
+    longer exists is matched to the call on that day that now covers its time."""
+    calls = {d: day_data(d)[1] for d in all_days()}
+    ids = {c["id"] for cs in calls.values() for c in cs}
+    def resolve(i):
+        if i in ids:
+            return i
+        try:
+            d, t = i.split("@"); t = int(t)
+        except ValueError:
+            return None
+        hit = next((c for c in calls.get(d, []) if c["start"] - 60000 <= t <= c["end"]), None)
+        return hit["id"] if hit else None
+    out = []
+    for g in merge_groups():
+        r = list(dict.fromkeys(x for x in map(resolve, g) if x))
+        if len(r) >= 2:
+            out.append(r)
+    return out
+
+
 def merged_id_of() -> dict[str, str]:
-    """call id -> id of the merged call it is part of (its earliest part)."""
-    return {i: g[0] for g in merge_groups() for i in g}
+    """call id -> id of the merged call it is part of, as /api/calls shows it."""
+    return {p["id"]: c["id"] for c in all_calls() if c.get("merged") for p in c["parts"]}
+
+
+def prune_merges():
+    """after a delete: keep only groups that still have two calls, in current ids."""
+    save_merge_groups(resolved_groups())
 
 
 def all_calls() -> list[dict]:
@@ -537,7 +565,7 @@ def all_calls() -> list[dict]:
     by_id = {c["id"]: c for c in raw}
     part = lambda c: {"id": c["id"], "day": c["day"], "start": c["start"], "end": c["end"], "ch": c["ch"]}
     merged, used = {}, set()
-    for g in merge_groups():
+    for g in resolved_groups():
         cs = sorted((by_id[i] for i in g if i in by_id), key=lambda c: c["start"])
         if len(cs) < 2:
             continue
@@ -545,7 +573,9 @@ def all_calls() -> list[dict]:
         for c in cs:
             for rank, p in enumerate(c["people"]):
                 talk[p] = talk.get(p, 0) + 1 / (rank + 1)        # people ranked by how high they were in each part
-        merged[first["id"]] = {**first, "start": first["start"], "end": max(c["end"] for c in cs),
+        latest = max(cs, key=lambda c: c["end"])             # channel and server of where it is now
+        merged[first["id"]] = {**first, **{k: latest[k] for k in ("ch", "chName", "guild", "guildName")},
+                               "start": first["start"], "end": max(c["end"] for c in cs),
                                "people": sorted(talk, key=lambda p: -talk[p]),
                                "lines": sum(c["lines"] for c in cs), "words": sum(c["words"] for c in cs),
                                "total": sum(c["total"] for c in cs), "preview": cs[-1]["preview"],
@@ -633,7 +663,19 @@ def delete_group(kind: str, key: str) -> dict:
     set_archived(f"{kind}:{key}", False)
     if kind == "call":
         unmerge_call(key)
+    prune_merges()
     return {"calls": n_calls, "lines": n_lines}
+
+
+def parse_parts(raw: str) -> list | None:
+    """'day~start~end~channel;...' from the dashboard: the stretches a (merged) call covers."""
+    from urllib.parse import unquote_plus
+    out = []
+    for sp in unquote_plus(raw or "").split(";"):
+        bits = sp.split("~")
+        if len(bits) == 4 and re.fullmatch(r"\d{4}-\d{2}-\d{2}", bits[0]) and bits[1].isdigit() and bits[2].isdigit():
+            out.append((bits[0], int(bits[1]), int(bits[2]), bits[3]))
+    return out or None
 
 
 def all_days() -> list[str]:
@@ -1270,30 +1312,28 @@ class PersonalityReader:
                                       repetition_penalty=1.05)
         return self.proc.decode(gen[0][ids["input_ids"].shape[1]:], skip_special_tokens=True).strip()
 
-    def think_then_answer(self, messages: list[dict], think_tokens: int = 350, answer_tokens: int = 60) -> str:
+    def think_then_answer(self, messages: list[dict], prefix: str = "", think_tokens: int = 350, answer_tokens: int = 16) -> str:
         """LFM3 reasons inside <think>...</think> before it answers. Let it think for
-        at most think_tokens, close the thinking if it hasn't, then take its answer."""
+        at most think_tokens, close the thinking, and start its answer with prefix so a
+        small model writes the answer itself rather than more thinking. Returns prefix + answer."""
         if self.engine == "mlx":
             from mlx_vlm import generate
             from mlx_vlm.prompt_utils import apply_chat_template
-            prompt = apply_chat_template(self.proc, self.model.config, messages, num_images=0)
+            prompt = apply_chat_template(self.proc, self.model.config, messages, num_images=0, enable_thinking=True)
             gen = lambda p, n: (lambda o: o.text if hasattr(o, "text") else str(o))(
                 generate(self.model, self.proc, p, max_tokens=n, temperature=0.0, repetition_penalty=1.1, verbose=False))
         else:
             import torch
-            prompt = self.proc.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+            prompt = self.proc.apply_chat_template(messages, add_generation_prompt=True, tokenize=False, enable_thinking=True)
             def gen(p, n):
                 ids = self.proc(p, return_tensors="pt", add_special_tokens=False).to("cuda")
                 with torch.inference_mode():
                     out = self.model.generate(**ids, max_new_tokens=n, do_sample=False, repetition_penalty=1.05)
                 return self.proc.decode(out[0][ids["input_ids"].shape[1]:], skip_special_tokens=False)
-        first = gen(prompt, think_tokens)
-        if "</think>" in first and first.split("</think>", 1)[1].strip():
-            return first
-        thought = first.split("</think>", 1)[0]
-        if "<think>" not in prompt[-20:] and "<think>" not in thought:
-            thought = "<think>" + thought
-        return thought + "</think>\n" + gen(prompt + thought + "\n</think>\n", answer_tokens)
+        if prompt.rstrip().endswith("<think></think>"):          # template turned thinking off: turn it on
+            prompt = prompt.rstrip()[:-len("</think>")]
+        thought = gen(prompt, think_tokens).split("</think>", 1)[0]
+        return prefix + gen(prompt + thought + "\n</think>\n" + prefix, answer_tokens)
 
     def _idle_unload(self):
         while True:
@@ -1304,14 +1344,16 @@ class PersonalityReader:
                     gc.collect()
                     print("Personality read: model unloaded (idle).", flush=True)
 
-    def start(self, day: str, t0: int, t1: int, ch: str, user: str, name: str, fresh: bool = False) -> dict:
+    def start(self, day: str, t0: int, t1: int, ch: str, user: str, name: str, fresh: bool = False, parts: list | None = None) -> dict:
         if not current_settings()["personality"]:
             return {"error": "Personality reads are turned off in Settings."}
         eng, why = self.engine_here()
         if not eng:
             return {"error": why}
         recs = [r for d in day.split(",") if d for r in day_data(d)[0]]     # a merged call can span days
-        mine = [r for r in recs if t0 <= r["t"] <= t1 and (not ch or not r.get("ch") or r.get("ch") == ch) and not r.get("bg")
+        inside = (lambda r: any(a <= r["t"] <= b and (not c or not r.get("ch") or r["ch"] == c) for _, a, b, c in parts)) if parts \
+            else (lambda r: t0 <= r["t"] <= t1 and (not ch or not r.get("ch") or r.get("ch") == ch))
+        mine = [r for r in recs if inside(r) and not r.get("bg")
                 and ((user and r.get("user") == user) or (not user and r.get("speaker") == name))]
         said = [r["text"].strip() for r in mine if r.get("text", "").strip()]
         words = sum(len(x.split()) for x in said)
@@ -1365,19 +1407,19 @@ class PersonalityReader:
 QA_SYSTEM = """You read part of a voice-chat transcript between friends playing a game together. You get what was said before, one QUESTION line, and the numbered lines said after it.
 1. Is the QUESTION a real question: the speaker asks someone else something and expects a reply? NOT real questions: rhetorical questions, jokes, exclamations, quoted speech, filler ("right?", "huh?"), and questions the speaker answers themselves.
 2. If it is real, which numbered later line, said by a DIFFERENT person, answers it? It must respond to what was asked (a yes or no, a choice, the information asked for). Most later lines are not answers. If none answers it, the answer is null.
-Think about what is being asked and who replies to it, then reply with JSON only: {"real": true or false, "answer": number of the later line or null}"""
+Think about what is being asked and who replies to it, then reply with JSON only: {"answer": number of the later line, or null}"""
 QA_REAL = """You read a moment from a voice chat between friends playing a game. Is the QUESTION line a real question, where the speaker wants someone else to reply with an answer?
 Real questions (answer yes) ask the others for information, a choice, help, or a yes or no, even when short or rough: "which fob are you in?", "can you hear me?", "who needs a hammer?", "what accent is that?", "is the grenade launcher support XP?".
 Not real questions (answer no): exclamations and swearing ("what the hell?", "bro, what the fuck?"), rhetorical questions, jokes and teasing, quoted speech, filler ("right?", "huh?", "you know what?"), and questions the speaker answers themselves.
 Think it through, then reply with one word: yes or no."""
 QA_VERIFY = """You read two lines from a voice chat. Q is a question. Does line A answer Q: does it respond to what Q asked? A line that only follows Q, changes the subject, or answers something else does not.
 Think it through, then reply with one word: yes or no."""
-QA_WAIT_S = 25          # judge a question once this long has passed, so its answer has had time to arrive
+QA_WAIT_S = 75          # judge a question once its answer window (45 s) and any 2B rewrite (within 60 s) have passed
 
 
 def is_question_text(text: str) -> bool:
     t = (text or "").strip().rstrip("\"')]” ").strip()
-    return t.endswith("?") and len(t.split()) >= 2
+    return bool(re.search(r"\?[!?]*$", t)) and len(t.split()) >= 2     # "?", "??", "?!" like the dashboard
 
 
 class QAJudge:
@@ -1388,10 +1430,15 @@ class QAJudge:
         self.res: dict[str, dict] = {}                # day -> {line id: {"real", "answer"}}
         self.cv = threading.Condition()
         self.error = None
+        self.fails = 0                                # model errors in a row
+        self.off_until = 0.0                          # after repeated errors, rest a while
+        self.tries: dict[tuple[str, str], int] = {}   # unclear replies per question
+        self.wanted: dict[tuple[str, str], float] = {}   # when the dashboard last asked about it
         threading.Thread(target=self._worker, daemon=True).start()
 
     def available(self) -> bool:
-        return current_settings().get("qaLinks", True) and self.reader.engine_here()[0] is not None
+        return (current_settings().get("qaLinks", True) and self.reader.engine_here()[0] is not None
+                and time.time() >= self.off_until)
 
     def _path(self, day: str) -> Path:
         return TRANSCRIPTS / f"{day}.qa.json"
@@ -1404,32 +1451,40 @@ class QAJudge:
                 self.res[day] = {}
         return self.res[day]
 
-    def request(self, days: list[str], t0: int, t1: int, ch: str) -> dict:
+    def request(self, days: list[str], t0: int, t1: int, ch: str, parts: list | None = None) -> dict:
         """What is known for the questions in this stretch; queues the rest."""
         judged, waiting, now = {}, 0, time.time() * 1000
         ok = self.available()
-        for d in days:
+        spans = parts or [(d, t0, t1, ch) for d in days]
+        for d in {sp[0] for sp in spans}:
             got = self.day_results(d)
-            for r in day_data(d)[0]:
-                if not (t0 <= r["t"] <= t1) or r.get("bg") or not r.get("id") or (ch and r.get("ch") and r["ch"] != ch):
+            recs = day_data(d)[0]
+            ids = {r.get("id") for r in recs}
+            for r in recs:
+                if r.get("bg") or not r.get("id") or not is_question_text(r.get("text", "")):
                     continue
-                if not is_question_text(r.get("text", "")):
+                if not any(sd == d and a <= r["t"] <= b and (not c or not r.get("ch") or r["ch"] == c) for sd, a, b, c in spans):
                     continue
-                if r["id"] in got:
-                    judged[r["id"]] = got[r["id"]]
+                res = got.get(r["id"])
+                if res and res.get("answer") and res["answer"] not in ids:
+                    got.pop(r["id"], None); res = None           # its answer was rewritten since: judge again
+                if res:
+                    judged[r["id"]] = res
                 elif ok:
                     waiting += 1
-                    if now - r["end"] > QA_WAIT_S * 1000 and (d, r["id"]) not in self.pending:
+                    key = (d, r["id"])
+                    self.wanted[key] = time.time()
+                    if now - r["end"] > QA_WAIT_S * 1000:
                         with self.cv:
-                            self.pending.add((d, r["id"]))
-                            self.todo.insert(0, (d, r["id"]))
-                            self.cv.notify()
+                            if key not in self.pending and len(self.todo) < 400:
+                                self.pending.add(key)
+                                self.todo.insert(0, key)
+                                self.cv.notify()
         return {"available": ok, "model": LLM_NAME, "judged": judged, "waiting": waiting, "error": self.error}
 
-    def _think(self, system: str, user: str) -> str:
+    def _think(self, system: str, user: str, prefix: str = "Answer (yes or no):") -> str:
         """The model's answer after a short, capped stretch of thinking (the thinking is dropped)."""
-        out = self.reader.think_then_answer([{"role": "system", "content": system}, {"role": "user", "content": user}])
-        return out.split("</think>", 1)[-1]
+        return self.reader.think_then_answer([{"role": "system", "content": system}, {"role": "user", "content": user}], prefix)
 
     def judge(self, day: str, qid: str) -> dict | None:
         recs = [r for r in day_data(day)[0] if not r.get("bg") and r.get("text")]
@@ -1459,12 +1514,11 @@ class QAJudge:
         if not asks_others and yn and yn[0] == "no":
             return {"real": False, "answer": None}
         # 2. which later line answers it
-        out = self._think(QA_SYSTEM, text)
-        found = re.findall(r'\{[^{}]*"real"[^{}]*\}', out)
-        try:
-            j = json.loads(found[-1])
-        except Exception:
-            return {"real": False, "answer": None, "unsure": True}
+        out = self._think(QA_SYSTEM, text, prefix='{"answer":')
+        m = re.match(r'\{"answer":\s*(\d+|null|none)', out, re.I)
+        if not m:
+            return {"unsure": True}                     # unclear reply: not saved, tried again
+        j = {"answer": int(m.group(1)) if m.group(1).isdigit() else None}
         real = True                         # settled in step 1; this step only picks the answer
         ans = j.get("answer")
         a = after[ans - 1] if isinstance(ans, int) and 1 <= ans <= len(after) else None
@@ -1485,6 +1539,10 @@ class QAJudge:
                 while not self.todo:
                     self.cv.wait(timeout=30)
                 day, qid = self.todo.pop(0)
+            if time.time() - self.wanted.get((day, qid), 0) > 300:    # nobody is looking at that call any more
+                with self.cv:
+                    self.pending.discard((day, qid))
+                continue
             try:
                 eng, why = self.reader.engine_here()
                 if not eng:
@@ -1493,7 +1551,10 @@ class QAJudge:
                     self.reader._load(eng)
                     res = self.judge(day, qid)
                     self.reader.last_used = time.time()
-                self.error = None
+                self.error, self.fails = None, 0
+                if res and res.get("unsure"):
+                    n = self.tries[(day, qid)] = self.tries.get((day, qid), 0) + 1
+                    res = {"real": True, "answer": None} if n >= 2 else None     # twice unclear: call it unanswered
                 if res is not None:
                     got = self.day_results(day)
                     got[qid] = res
@@ -1501,7 +1562,13 @@ class QAJudge:
                     tmp.write_text(json.dumps(got), encoding="utf-8"); tmp.replace(self._path(day))
             except Exception as e:
                 self.error = f"{type(e).__name__}: {e}"[:200]
+                self.fails += 1
                 print("Questions and answers:", self.error, flush=True)
+                if self.fails >= 3:                        # keep failing: stop for 5 minutes, say so
+                    self.off_until = time.time() + 300
+                    with self.cv:
+                        self.todo.clear(); self.pending.clear()
+                    self.fails = 0
                 time.sleep(5)
             finally:
                 with self.cv:
@@ -1552,7 +1619,7 @@ def english_mask(tokenizer, size: int, symbols: bool = False, ban: set | None = 
             # a whole foreign word: after a space mark, or capitalised (the first word of a line);
             # a lower-case piece with no space mark is the middle of a word ("chem|ist") and stays
             w = t.strip().lower()
-            if w in ban and (raw[:1] in "\u2581\u0120" or t.strip()[:1].isupper()):
+            if w in ban and (raw[:1] in "\u2581\u0120" or t.strip().istitle()):
                 ok[i] = False
                 continue
         if symbols and not ok[i]:
@@ -1677,10 +1744,11 @@ de het een en niet ik je wij zijn van voor met op dat ook
 nao sim obrigado voce com uma para mas muito""".split()) - EN_COMMON
 
 
-# Words Granite 2B may never write: common German, Spanish, French, Italian,
-# Dutch and Portuguese words that are not also English words (or the start of
-# common English ones). With them blocked, speech the model half-hears as
-# another language comes out as the English words it most likely was.
+# Words Granite 2B is kept from writing as whole words (a strong push, not a
+# guarantee: a word can still come out in pieces; not_english() catches the rest):
+# common German, Spanish, French, Italian, Dutch and Portuguese words. With them
+# blocked, speech the model half-hears as another language comes out as the
+# English words it most likely was.
 BAN_WORDS = set("""
 nicht ist und ich wir sind auch aber noch wenn dann nein danke bitte heute wieder mein meine meinen dein deine seine ihre
 unser unsere euch mich dich sich ihm ihn ihnen haben habe hast hatte hatten wird werden wurde wurden kann kannst können
@@ -1698,25 +1766,74 @@ beaucoup rien chose quoi pourquoi comment parce faire avoir être suis sommes ê
 questo questa sono della grazie ciao perché anche molto adesso ancora sempre niente cosa allora andiamo dove quando
 niet het een zijn voor ook maar nog wel heel goed dank waarom wanneer
 não você obrigado obrigada muito então agora isso isto""".split())
-# ...minus ones that are also English words, names or places
-BAN_WORDS -= {"comment", "pour", "sage", "chose", "dove", "encore", "heel", "dank", "nee", "elle", "agora", "della",
+# ...minus ones that are also English words, names or places, or the start of
+# common English words in the model's vocabulary ("Mich|ael", "ach|e", "nach|os")
+BAN_WORDS -= {"immer", "nach", "ach", "erst", "und", "muss", "mich", "nada", "mucho", "vamos", "bueno",
+              "comment", "pour", "sage", "chose", "dove", "encore", "heel", "dank", "nee", "elle", "agora", "della",
               "poco", "morgen", "claro", "hoy", "nog", "seine", "ging", "het"}
 FOREIGN_COMMON |= BAN_WORDS - EN_COMMON
+# words that also turn up in English chat (gaming slang, names, loans) never count as foreign
+ENGLISHY = {"op", "die", "per", "con", "met", "van", "al", "lo", "la", "sim", "het", "dat", "dem", "den", "so", "me", "mi",
+            "yo", "si", "en", "de", "du", "des", "le", "il", "es", "tu", "ja", "na", "wo", "am", "ok", "nada", "ciao",
+            "hola", "merci", "gracias", "mucho", "bueno", "amigo", "vamos", "pronto", "bien", "oui", "una", "el", "los"}
+FOREIGN_COMMON -= ENGLISHY - {"ja", "oui", "bien"}       # still foreign on a line of their own (see SHORT_FOREIGN)
 
 
 # one- or two-word lines ("Ja.", "Es ist...", "Oui") are dropped when every word is
 # one of these; words that are also English slang or English words are left out
-SHORT_FOREIGN = FOREIGN_COMMON - {"yo", "die", "si", "me", "ok", "con", "via", "den", "mit"}
+SHORT_FOREIGN = (FOREIGN_COMMON | {"ja", "oui", "bien"}) - (ENGLISHY - {"ja", "oui", "bien"}) - {"via", "mit"}
+
+
+# How common each word is in English and six other languages (server/langwords.txt.gz,
+# built by tools/build_langwords.py from wordfreq data). A line is in another
+# language when its words, all together, fit that language clearly better than
+# English: laughter and filler ("ha", "um", "no") count for nothing.
+LANG_NEUTRAL = set("ha hah haha hahaha hahahaha he hehe heh hi ho hey oh ah aha uh um umm hm hmm mm mhm no nope yeah yep yup "
+                   "yes ok okay bah ugh eh huh wow yo bro man sus gg lol lmao da ta la na o a i".split())
+_langwords: dict | None = None
+
+
+def langwords() -> dict:
+    global _langwords
+    if _langwords is None:
+        _langwords = {}
+        try:
+            import gzip
+            with gzip.open(Path(__file__).with_name("langwords.txt.gz"), "rt", encoding="utf-8") as f:
+                for line in f:
+                    if not line.startswith("#"):
+                        w, *v = line.split()
+                        _langwords[w] = [float(x) for x in v]
+        except Exception as e:
+            print("Language data missing, using the word lists only:", e, flush=True)
+    return _langwords
+
+
+def foreign_score(text: str) -> tuple[float, int]:
+    """(how much better the best other language fits than English, known words)"""
+    z = langwords()
+    ws = [w for w in re.findall(r"[^\W\d_]+(?:'[^\W\d_]+)?", text.lower()) if w not in LANG_NEUTRAL]
+    tot, known = [0.0] * 7, 0
+    for w in ws:
+        v = z.get(w)
+        if v:
+            known += 1
+            for i in range(7):
+                tot[i] += max(v[i], 1.0)
+    return (max(tot[1:]) - tot[0], known) if known else (0.0, 0)
 
 
 def not_english(text: str) -> bool:
+    if langwords():
+        d, known = foreign_score(text)
+        return d >= 2.5 and d >= 0.8 * known       # tuned on real calls: catches foreign lines, keeps English and filler
     words = re.findall(r"[a-z']+", text.lower())
     if len(words) < 3:
         return bool(words) and all(w in SHORT_FOREIGN for w in words)
     f = sum(w in FOREIGN_COMMON for w in words)
     e = sum(w in EN_COMMON for w in words)
     distinct = len({w for w in words if w in FOREIGN_COMMON})
-    if distinct >= 3 and f >= 0.25 * len(words):      # plenty of another language, even mixed with English words
+    if distinct >= 3 and f >= 0.25 * len(words) and f > e:   # plenty of another language, even mixed with some English
         return True
     return distinct >= 2 and f > 2 * e and f >= 0.25 * len(words)
 
@@ -2051,7 +2168,9 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
         try:
             started = time.time()
             res = model_run(audio) or ""
+            used_2b = False
             if isinstance(res, dict) and res.get("foreign") and refine_run:
+                used_2b = True
                 # 470M heard another language: ask 2B, which can only write English, right away
                 res = refine_run(audio) or ""
                 if res:
@@ -2082,7 +2201,7 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
         for part, a, b in keep:
             start = to_clock(marks, a)
             written.append(writer.write(start, max(0.3, (to_clock(marks, b) - start) / 1000), uid, who, part, ch, bg))
-        if refine_run and written:
+        if refine_run and written and not used_2b:     # (2B already wrote it)
             hub.refine_q.append({"t0": t0, "audio": audio, "marks": marks, "lines": written, "queued": time.time()})
         hub.busy_t0 = None
 
@@ -2261,7 +2380,7 @@ async def main():
                 t0, t1 = int(params.get("from", 0)), int(params.get("to", 0)) or int(time.time() * 1000)
             except ValueError:
                 return respond({"error": "bad request"}, status=400)
-            return respond(qa_judge.request(days, t0, t1, unquote_plus(params.get("ch", ""))))
+            return respond(qa_judge.request(days, t0, t1, unquote_plus(params.get("ch", "")), parse_parts(params.get("parts", ""))))
         if path == "/api/persona/info":
             return respond(persona.info())
         if path == "/api/persona/start":
@@ -2269,9 +2388,10 @@ async def main():
                 return respond({"error": "forbidden"}, status=403)
             try:
                 from urllib.parse import unquote
-                res = persona.start(params.get("day", ""), int(params.get("from", 0)), int(params.get("to", 0)),
+                day_q = ",".join(d for d in unquote(params.get("day", "")).split(",") if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d))
+                res = persona.start(day_q, int(params.get("from", 0)), int(params.get("to", 0)),
                                     unquote(params.get("ch", "")), unquote(params.get("user", "")), unquote(params.get("name", "")),
-                                    fresh=params.get("fresh") == "1")
+                                    fresh=params.get("fresh") == "1", parts=parse_parts(params.get("parts", "")))
             except (ValueError, OSError) as e:
                 res = {"error": str(e)}
             return respond(res, status=400 if "error" in res else 200)

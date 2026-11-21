@@ -797,7 +797,7 @@ async function fetchQA() {
   qaFetching = true;
   try {
     const one = new Set(partsOf(c).map((p) => p.ch)).size === 1;
-    const q = new URLSearchParams({ days: daysOf(c).join(','), from: c.start, to: isLiveCall(c) ? 0 : c.end, ch: one ? (c.ch || '') : '' });
+    const q = new URLSearchParams({ days: daysOf(c).join(','), from: c.start, to: isLiveCall(c) ? 0 : c.end, ch: one ? (c.ch || '') : '', parts: partsParam(c) });
     const r = await fetch('/api/qa?' + q).then((x) => x.json());
     qaInfo = r;
     let changed = false;
@@ -843,7 +843,7 @@ function paintQA() {
     if (qa.a.has(r)) h += `<button class="qa" data-go="${lineIdx.get(qa.a.get(r))}" title="Go to the question this answers">answers ${who(qa.a.get(r))}</button>`;
     if (qa.q.has(r)) {
       const ans = qa.q.get(r);
-      h += ans === 'wait' ? '<span class="qa wait" title="A local model reads it with what was said around it, once others have had time to reply">checking for an answer</span>'
+      h += ans === 'wait' ? '<span class="qa wait" title="A small local model thinks it through with what was said around it, about a minute after it was asked">checking for an answer</span>'
         : ans ? `<button class="qa" data-go="${lineIdx.get(ans)}" title="Go to the answer">answered by ${who(ans)}</button>`
         : '<span class="qa none" title="Nobody answered it, judging by what was said after it">no answer</span>';
     }
@@ -1136,15 +1136,17 @@ function renderTimeline(s) {
   const recent = lines.filter((r) => r.end > startT && r.t < endT && own(r));
   const keys = [...new Set(recent.map((r) => keyOf.get(r)))].sort((a, b) => colorIndex.get(a) - colorIndex.get(b));
   document.querySelectorAll('#tl-range button').forEach((b) => b.classList.toggle('on', !tv && +b.dataset.m === tlRange));
-  const tm = $('#tl-meta'); if (tm) tm.textContent = tv ? '' : (narrowTl() ? '' : rangeName(tlRange));
-  svg.title = 'Drag across a stretch to zoom in · scroll to zoom · Shift+scroll to move · double-click to go back';
+  const tm = $('#tl-meta'); if (tm) { tm.textContent = tv || narrowTl() ? '' : rangeName(tlRange) + ' · drag to zoom in'; tm.title = 'Drag across a stretch to zoom in · scroll to zoom · Shift+scroll to move · double-click to go back'; }
   // lanes: a sized panel (compact view) fits them to its slot, never below 16 px
   const sized = !!svg.closest('.card.grow');
   const room = sized ? Math.max(60, svg.parentElement.clientHeight - 10) : Infinity;
   const padB = 4, padT = 20;            // clock times along the top, always in view
   const lane = Math.max(16, Math.min(sized ? 28 : 24, Math.floor((room - padB - padT) / Math.max(1, keys.length))));
-  const longest = Math.max(4, ...keys.map((k) => Math.min(16, Array.from(nameFor(k)).length)));
-  const padL = Math.min(150, Math.max(70, 18 + longest * 7.2)), right = W - 6;
+  // name column as wide as the longest name really is (measured), within 70-170 px
+  const mctx = (renderTimeline.c ||= document.createElement('canvas').getContext('2d'));
+  mctx.font = `600 11px ${getComputedStyle(svg).fontFamily}`;
+  const shortName = (k) => { const nm = Array.from(nameFor(k)); return nm.length > 16 ? nm.slice(0, 15).join('') + '…' : nm.join(''); };
+  const padL = Math.min(170, Math.max(70, 26 + Math.max(0, ...keys.map((k) => mctx.measureText(shortName(k)).width)))), right = W - 6;
   const H = Math.max(48, padT + keys.length * lane + padB);
   svg.setAttribute('height', H); svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   svg.__geo = { padL, W, a: startT, b: endT, right };
@@ -1154,16 +1156,19 @@ function renderTimeline(s) {
   const now = Date.now();
   let out = '';
   // gridlines with clock times
-  const secs = span < 6e5, st = tickStep(span, right - padL, secs ? 52 : 36);
+  let st = tickStep(span, right - padL, 36);
+  if (st < 6e4) st = tickStep(span, right - padL, 52);     // labels with seconds are wider
+  const secs = st % 6e4 !== 0, nowShown = live && !tv && endT >= now - 1000, lw = secs ? 52 : 36;
   for (let t = Math.ceil(startT / st) * st; t <= endT; t += st) {
     const xx = x(t);
     out += `<line x1="${xx}" x2="${xx}" y1="${padT - 4}" y2="${H - padB}" stroke="var(--grid)"/>`;
-    if (xx > padL + 20 && xx < right - 34) out += `<text x="${xx}" y="13" text-anchor="middle">${clockLabel(t, secs && st % 6e4 !== 0)}</text>`;
+    if (xx - lw / 2 > padL - 4 && xx + lw / 2 < right - (nowShown ? 34 : 0)) out += `<text x="${xx}" y="13" text-anchor="middle">${clockLabel(t, secs)}</text>`;
   }
   // lanes: shaded rows, colour swatch and name (bold while talking)
   keys.forEach((k, i) => {
     const yy = padT + i * lane, talking = recent.some((r) => keyOf.get(r) === k && now - r.end < 4000) && live && !tv;
-    const nm = Array.from(nameFor(k)), short = nm.length > 16 ? nm.slice(0, 15).join('') + '…' : nm.join('');
+    let short = shortName(k);
+    while (short.length > 2 && mctx.measureText(short).width > padL - 24) short = Array.from(short).slice(0, -2).join('') + '…';
     if (i % 2 === 0) out += `<rect x="0" y="${yy}" width="${W}" height="${lane}" fill="var(--text-primary)" opacity=".035"/>`;
     out += `<rect x="4" y="${yy + lane / 2 - 4}" width="8" height="8" rx="2" fill="${colorFor(k)}"/>`
       + `<text x="17" y="${yy + lane / 2 + 4}" style="fill:var(--text-${talking ? 'primary' : 'secondary'});font-weight:${talking ? 650 : 400}"><title>${esc(nameFor(k))}</title>${esc(short)}</text>`;
@@ -1625,7 +1630,7 @@ const CH_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="current
 // Several calls can be live at once (one per account/voice channel).
 const liveChannels = () => new Set([...(liveState?.accounts || []).filter((a) => a.inCall && a.channel?.id).map((a) => a.channel.id),
   ...(liveState?.ext?.inCall && liveState.ext.channel?.id ? [liveState.ext.channel.id] : [])]);
-const isLiveCall = (c) => !!c && lastDay(c) === today() && Date.now() - c.end < GAP && (c === calls[0] || (!!c.ch && liveChannels().has(c.ch)));
+const isLiveCall = (c) => !!c && partsOf(c).some((p) => p.day === today() && Date.now() - p.end < GAP && (c === calls[0] || (!!p.ch && liveChannels().has(p.ch))));
 const liveCallCount = () => calls.filter(isLiveCall).length;
 const currentCall = () => selected === 'live' ? calls[0] : calls.find((c) => c.id === selected);
 const isToday = () => isLiveCall(currentCall());    // "viewing live" for the charts
@@ -2214,7 +2219,7 @@ async function personaRead(k) {
   async function run(fresh = false) {
     if (personaInfo && !personaInfo.available) { frame('', `<p>${esc(personaInfo.reason || 'Not available on this computer.')}</p>`); return; }
     frame('Starting…', '<div class="pwait"><span class="s"></span>Reading what they said…</div>');
-    const q = new URLSearchParams({ day: daysOf(c).join(','), from: c.start, to: c.end, ch: new Set(partsOf(c).map((p) => p.ch)).size === 1 ? (c.ch || '') : '', user, name: speaker || name, ...(fresh ? { fresh: '1' } : {}) });
+    const q = new URLSearchParams({ day: daysOf(c).join(','), from: c.start, to: c.end, ch: new Set(partsOf(c).map((p) => p.ch)).size === 1 ? (c.ch || '') : '', parts: partsParam(c), user, name: speaker || name, ...(fresh ? { fresh: '1' } : {}) });
     const r = await fetch('/api/persona/start?' + q, { method: 'POST', headers: { 'X-CT': '1' } }).then((x) => x.json()).catch((e) => ({ error: String(e) }));
     if (closed) return;
     if (r.error) { frame('', `<p>${esc(r.error)}</p>`); return; }
@@ -2294,7 +2299,7 @@ async function refreshPers() {
   try {
     for (const p of persCandidates()) {
       const user = /^\d{15,22}$/.test(p.k) ? p.k : '';
-      const q = new URLSearchParams({ day: daysOf(c).join(','), from: c.start, to: c.end, ch: new Set(partsOf(c).map((p) => p.ch)).size === 1 ? (c.ch || '') : '', user, name: user ? nameFor(p.k) : String(p.k).replace(/^name:/, '') });
+      const q = new URLSearchParams({ day: daysOf(c).join(','), from: c.start, to: c.end, ch: new Set(partsOf(c).map((p) => p.ch)).size === 1 ? (c.ch || '') : '', parts: partsParam(c), user, name: user ? nameFor(p.k) : String(p.k).replace(/^name:/, '') });
       const r = await fetch('/api/persona/start?' + q, { method: 'POST', headers: { 'X-CT': '1' } }).then((x) => x.json()).catch(() => null);
       if (!r || r.error) continue;
       if (!persOverview.get(p.k)?.sentence) { persOverview.set(p.k, { status: 'working' }); renderPers(); }
@@ -2327,6 +2332,8 @@ function confirmBox(title, body, note, okLabel) {
 }
 
 // A call can be several merged calls ("parts"), possibly on different days.
+// a call's stretches for the server: 'day~start~end~channel;...' (live parts run to now)
+const partsParam = (c) => partsOf(c).map((p, i, a) => [p.day, p.start, i === a.length - 1 && isLiveCall(c) ? Date.now() + 60000 : p.end, p.ch || ''].join('~')).join(';');
 const partsOf = (c) => c.parts?.length ? c.parts : [{ id: c.id, day: c.day, start: c.start, end: c.end, ch: c.ch }];
 const daysOf = (c) => [...new Set(partsOf(c).map((p) => p.day))];
 const lastDay = (c) => partsOf(c).at(-1).day;
@@ -2471,20 +2478,20 @@ function connect() {
       const d = today();
       if (dayCache.has(d)) { const arr = dayCache.get(d); arr.push(m); arr.sort((a, b) => a.t - b.t); }
       // the call this line belongs to: the open call in its channel (several can run at once)
-      const partFor = (c) => partsOf(c).find((p) => p.day === d && (m.ch ? p.ch === m.ch : true) && m.t - p.end < GAP);
+      const partFor = (c) => partsOf(c).find((p) => p.day === d && (!m.ch || !p.ch || p.ch === m.ch) && m.t - p.end < GAP);
       const top = (m.ch && calls.find((c) => partFor(c) && partsOf(c).some((p) => p.ch === m.ch)))
         || (calls[0] && lastDay(calls[0]) === d && m.t - calls[0].end < GAP && (!m.ch || !calls[0].ch) ? calls[0] : null);
       const extends_ = !!top;
       if (extends_) {
         top.end = Math.max(top.end, m.end);
-        const part = partFor(top); if (part) part.end = Math.max(part.end, m.end);
+        const part = partFor(top); if (part) { part.end = Math.max(part.end, m.end); if (m.ch && !part.ch) part.ch = m.ch; }
         if (!m.bg) {                    // background voices aren't counted as the person's (as the server does)
           top.lines++; top.words += m.text.split(/\s+/).length;
           if (!top.people.includes(m.speaker)) top.people.push(m.speaker);
         }
         if (m.ch && !top.ch) Object.assign(top, { ch: m.ch, chName: m.chName, guildName: m.guildName });
         if ((selected === 'live' && top === calls[0]) || selected === top.id) {
-          lines = linesOf(top, callRecs(top));
+          allLines = callRecs(top); lines = linesOf(top, allLines);   // (a merged call's lines come from several days)
           const atEnd = lines[lines.length - 1] === m;
           rebuildKeys(); const s = stats(); renderKPIs(s); renderBars(s); renderWords(); renderWhere();
           if (atEnd && !filter && !query) renderFeed(true); else renderFeed();

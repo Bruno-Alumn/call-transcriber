@@ -42,7 +42,9 @@ for t, want in [("Hola todos, que tal estis? Maana vamos a la reunion con el equ
                 ("Guten Morgen, we mussten, um die Gruppe der neuen Datei sprechen, das is wichtig.", True),
                 ("I went to La Paz with Jose de la Cruz.", False),
                 ("Ja.", True), ("Es ist…", True), ("Oui", True), ("Bien.", True),
-                ("Yo.", False), ("Die.", False), ("Okay.", False), ("No.", False), ("So", False)]:
+                ("Yo.", False), ("Okay.", False), ("No.", False), ("So", False), ("Ha ha ha!", False), ("Um…", False),
+                ("Herr Prager, Herr Kommissar, liebe Kolleginnen, liebe Kollegen!", True), ("Es un buen momento.", True),
+                ("Parece que.", True), ("Nicht genug.", True), ("He's from Uganda.", False), ("That van is OP, man.", False)]:
     check(S.not_english(t) == want, f"{'dropped' if want else 'kept'}: {t!r}")
 clips = [(v, clip(v, t)) for v, t in SAY]
 for mid in ["granite-470m", "granite-2b"]:
