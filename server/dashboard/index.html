@@ -93,6 +93,9 @@ body {
 .modal p { margin: 0 0 6px; color: var(--text-secondary); font-size: 13px; line-height: 1.45; }
 .modal .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .modal button { font: inherit; font-size: 13px; padding: 7px 14px; border-radius: 9px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-primary); cursor: pointer; }
+.modal .pxin { width: 100%; font: inherit; color: var(--text-primary); background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; outline: none; }
+.modal .pxin:focus { border-color: var(--accent); }
+.modal .pnote.bad { color: var(--bad); }
 .modal button.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
 .banner { display: none; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 12px; border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   background: color-mix(in srgb, var(--accent) 12%, var(--surface-1)); font-size: 13px; }
@@ -423,6 +426,8 @@ body.compact #feedmeta { display: none; }
 .acct .ar { font-weight: 500; font-size: 10.5px; color: var(--text-muted); border: 1px solid var(--grid); border-radius: 3px; padding: 0 4px; }
 .acct .as { color: var(--text-secondary); font-size: 11.5px; margin-top: 2px; }
 .acct.bad .as { color: var(--bad); }
+.acct .ap { color: var(--text-muted); font-size: 11px; margin-top: 2px; overflow-wrap: anywhere; }
+.acct .ap.bad { color: var(--bad); }
 .acct .ab { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
 .acct .ab button { flex: none; padding: 3px 8px; font-size: 11.5px; }
 .pop { max-height: calc(100vh - 80px); overflow-y: auto; }
@@ -2123,9 +2128,11 @@ function accountLine(a) {
   const st = !a.open ? 'not open' : !a.signedIn ? 'sign in to Discord in its window'
     : a.deafened ? 'deafened, nothing is being heard' : a.inCall ? `${esc(a.channel?.name || 'in a call')}${a.channel?.guildName ? ' · ' + esc(a.channel.guildName) : ''} · ${a.capturing ? 'transcribing' : 'standing by (another account transcribes it)'}`
     : a.hint ? 'click Join Voice in its window' : 'free';
+  const px = a.proxyMode === 'invalid' ? '<div class="ap bad">Proxy setting needs attention</div>'
+    : a.proxy ? `<div class="ap">Proxy ${esc(a.proxy)}</div>` : '';
   return `<div class="acct${a.deafened ? ' bad' : ''}"><div class="an">${esc(a.label)}<span class="ar">${a.role === 'main' ? 'main' : 'listener'}</span></div>
-    <div class="as">${st}</div>
-    <div class="ab"><button data-acct-show="${esc(a.id)}">Show</button>${a.role === 'listener' ? `<button data-acct-mute="${esc(a.id)}" data-on="${a.muted ? 0 : 1}">${a.muted ? 'Sound on' : 'Sound off'}</button><button data-acct-main="${esc(a.id)}" title="Make this your main account. No account ever sends your microphone">Make main</button><button data-acct-rm="${esc(a.id)}" class="danger">Remove</button>` : ''}</div></div>`;
+    <div class="as">${st}</div>${px}
+    <div class="ab"><button data-acct-show="${esc(a.id)}">Show</button>${a.role === 'listener' ? `<button data-acct-mute="${esc(a.id)}" data-on="${a.muted ? 0 : 1}">${a.muted ? 'Sound on' : 'Sound off'}</button><button data-acct-main="${esc(a.id)}" title="Make this your main account. No account ever sends your microphone">Make main</button>` : ''}<button data-acct-proxy="${esc(a.id)}" title="Give this account its own proxy for Discord">Proxy…</button>${a.role === 'listener' ? `<button data-acct-rm="${esc(a.id)}" class="danger">Remove</button>` : ''}</div></div>`;
 }
 function accountsHtml() {
   const list = appState.accounts || [];
@@ -2140,8 +2147,48 @@ document.addEventListener('click', async (e) => {
   if (t.dataset.acctShow) desk.openDiscord(t.dataset.acctShow);
   if (t.dataset.acctMute) desk.setMuted(t.dataset.on === '0' ? false : true, t.dataset.acctMute);
   if (t.dataset.acctMain) await desk.setRole(t.dataset.acctMain, 'main');
+  if (t.dataset.acctProxy) openProxy(t.dataset.acctProxy);
   if (t.dataset.acctRm) await desk.removeAccount(t.dataset.acctRm);
 });
+// Per-account proxy: one account's Discord window can use its own proxy, so
+// several accounts can look like separate networks at once.
+async function openProxy(id) {
+  if (!desk?.accounts) return;
+  const info = await desk.accounts();
+  const a = (info.accounts || []).find((x) => x.id === id);
+  if (!a) return;
+  const bg = $('#modal'), box = bg.firstElementChild;
+  box.classList.add('persona');
+  const close = () => { bg.style.display = 'none'; box.classList.remove('persona'); removeEventListener('keydown', key); };
+  const key = (e) => { if (e.key === 'Escape') close(); };
+  addEventListener('keydown', key);
+  bg.onclick = (e) => { if (e.target === bg) close(); };
+  const saved = a.proxyMode === 'invalid' ? 'The saved proxy could not be read. Enter a new one, or choose Remove.'
+    : !a.proxy ? 'No proxy of its own: this account follows your system network settings.'
+    : a.proxyMode === 'direct' ? 'No proxy: this account connects directly.' : `Saved: ${esc(a.proxy)}`;
+  box.innerHTML = `<h3>Proxy for ${esc(a.label)}</h3>
+    <div class="psub">Only this account's Discord window uses it: sign-in, pages and the gateway. Other accounts keep their own.</div>
+    <input class="pxin" id="pxy" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="http://user:password@host:port">
+    <div class="pnote" id="pxymsg">${saved}</div>
+    <div class="pnote">host:port, host:port:user:password, socks5://… and Webshare's list lines all work. The value is kept on this computer only.</div>
+    <div class="btns">${a.proxy || a.proxyMode === 'direct' || a.proxyMode === 'invalid' ? '<button data-a="clear" class="danger">Remove</button>' : ''}<button data-a="save">Save</button><button data-a="close">Cancel</button></div>`;
+  const input = box.querySelector('#pxy'), msg = box.querySelector('#pxymsg');
+  const save = async (value) => {
+    msg.classList.remove('bad');
+    const r = await desk.setProxy(a.id, value);
+    if (r?.error) { msg.textContent = r.error; msg.classList.add('bad'); return; }
+    close();
+  };
+  box.querySelector('[data-a="close"]').onclick = close;
+  box.querySelector('[data-a="save"]').onclick = () => {
+    if (!input.value.trim()) { msg.textContent = 'Type a proxy, or choose Remove to go back to your system network.'; msg.classList.add('bad'); return; }
+    save(input.value);
+  };
+  box.querySelector('[data-a="clear"]')?.addEventListener('click', () => save(''));
+  bg.style.display = 'grid';
+  input.focus();
+}
+window.openProxy = openProxy;
 // "Transcribe a channel": pick a voice channel; the next free account opens it with Join Voice highlighted.
 async function openTranscribe() {
   if (!desk?.accounts) return;

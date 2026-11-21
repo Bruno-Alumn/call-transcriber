@@ -51,6 +51,7 @@ dashboard next to the call, and no audio ever leaves your machine.
 **Several accounts, several calls**
 
 - Add more accounts, each with its own call window and sign-in.
+- Give any account its own proxy (HTTP, HTTPS, SOCKS4 or SOCKS5, with or without a username and password), so several accounts can sign in from different networks at once. Webshare's proxy list lines work as they come.
 - Listener accounts get a silent microphone and start with their sound off, and are still transcribed.
 - **Transcribe a channel** sends the next free account to any channel you pick; you click Join.
 - Share a clean compact view of the call into the call itself when you screen share.
@@ -102,6 +103,19 @@ With an NVIDIA graphics card the PC uses it for the most accurate model; without
 
 On a PC, use <kbd>Ctrl</kbd> in place of <kbd>⌘</kbd>. Accounts and the speech model are also under the status buttons at the top of the dashboard.
 
+**Proxies.** Open **Accounts**, then **Proxy…** next to an account to give
+that account's Discord window its own proxy. It accepts the formats proxied
+services hand out: `host:port`, `host:port:username:password` (a Webshare
+proxy list line, for example), `user:password@host:port`, and URLs such as
+`http://user:password@host:port`, `https://…`, `socks4://…` and `socks5://…`.
+With Webshare, a line from your proxy list (Dashboard → Proxy → List, or the
+`proxy-manager` skill) pastes in as it comes; the rotating endpoint
+`p.webshare.io:80:username:password` works too. Other
+accounts keep their own setting, or your system network. The proxy covers that
+window's Discord connection: sign-in, pages and the gateway. Discord's voice
+media is WebRTC and Chromium may still send it outside the proxy, so it is not
+a guarantee about the address the call itself uses.
+
 Transcripts are saved in `transcripts/`, one Markdown and one JSON Lines file per day. Recording laws differ by place, and in many of them everyone in the call has to agree; following them is up to you.
 
 ## Troubleshooting
@@ -149,8 +163,8 @@ your computer. Its own network requests are:
 - **Update checks** against this repository with `git`, when the app starts and every 6 hours.
 - **The voice platform itself**, in the call window, as in a browser.
 
-Transcripts, learned names and call history stay in the app's folder and are
-never committed to git.
+Transcripts, learned names, call history and any proxy credentials you enter
+stay in the app's folder and are never committed to git.
 
 ### Permissions
 
@@ -232,6 +246,8 @@ cd ../app/desktop && npm ci && npx electron .
 
 - `node test/app-test.js <dir>`: the real app against a fake call with four speakers.
 - `node test/multi-test.js <dir>`: two accounts in separate calls, two in the same call, and Transcribe a channel.
+- `node test/proxy-app-test.js <dir>`: per-account proxies (a Webshare list line, SOCKS5, changing and removing it).
+- `node test/proxy-test.js`: the proxy formats accepted per account (no app needed).
 - `cd server && uv run python ../test/timing_test.py`: lines split at the right times.
 - `cd server && uv run python ../test/server_e2e.py`: the server alone, with people talking over each other.
 
